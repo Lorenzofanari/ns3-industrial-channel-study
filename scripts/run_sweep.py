@@ -30,6 +30,18 @@ def channel_args(name: str, root: Path) -> dict[str, str]:
         }
     if name == "quadriga_raytraced":
         cfg = load_simple_yaml(root / "configs/channels/quadriga_raytraced.yaml")
+        # `synthetic_placeholder_allowed`/`final_claims` are surfaced in every
+        # CSV row so reviewers can immediately tell whether a number relies on
+        # the documented placeholder trace or on measured data. The default
+        # YAML ships with `synthetic_placeholder_final_claims: false` so the
+        # safety gate is ON.
+        synthetic_placeholder_allowed = bool(cfg.get("synthetic_placeholder_allowed", True))
+        synthetic_placeholder_final_claims = bool(cfg.get("synthetic_placeholder_final_claims", False))
+        # Default provenance: synthetic_placeholder when the YAML still allows
+        # the placeholder trace. The operator can override --traceProvenance
+        # to `measured` once data/quadriga/<file>.csv has been replaced with
+        # measured QuaDRiGa data.
+        trace_provenance = "measured" if not synthetic_placeholder_allowed else "synthetic_placeholder"
         return {
             "--txPowerDbm": str(cfg["tx_power_dbm"]),
             "--noiseFigureDb": str(cfg["noise_figure_db"]),
@@ -37,6 +49,8 @@ def channel_args(name: str, root: Path) -> dict[str, str]:
             "--tracePath": str(root / cfg["trace_path"]),
             "--shadowingStdDb": str(cfg.get("shadowing_std_db", 0.0)),
             "--rayleighFading": "true" if cfg.get("rayleigh_fading", False) else "false",
+            "--traceProvenance": trace_provenance,
+            "--syntheticPlaceholderFinalClaimsAllowed": "true" if synthetic_placeholder_final_claims else "false",
         }
     raise ValueError(f"unsupported channel {name}")
 
@@ -146,6 +160,21 @@ def main() -> int:
     parser.add_argument("--snr-min", type=float, default=None)
     parser.add_argument("--snr-max", type=float, default=None)
     parser.add_argument("--snr-step", type=float, default=None)
+    parser.add_argument(
+        "--seed",
+        action="append",
+        type=int,
+        default=None,
+        help="Override the seed list from the config file. Repeat to enumerate multiple seeds; "
+             "useful when sharding a large campaign across parallel processes.",
+    )
+    parser.add_argument(
+        "--require-measured-trace",
+        action="store_true",
+        help="Forward --requireMeasuredTrace=true to the simulator binary. The camera-ready "
+             "pipeline should enable this so QuaDRiGa runs refuse to start with the synthetic "
+             "placeholder trace.",
+    )
     args = parser.parse_args()
 
     root = ROOT
@@ -160,7 +189,7 @@ def main() -> int:
     if not args.no_build:
         ensure_binary(binary)
 
-    seeds = base["simulation"]["seeds"]
+    seeds = args.seed if args.seed else base["simulation"]["seeds"]
     channels = args.channel_model or base["sweep"]["channel_model"]
     scenarios = base["sweep"]["scenario"]
     mcs_values = base["sweep"]["mcs"]
@@ -262,6 +291,8 @@ def main() -> int:
                 cmd.append(f"{key}={value}")
             if tx_power_dbm is not None:
                 cmd.append(f"--txPowerDbm={tx_power_dbm}")
+            if args.require_measured_trace:
+                cmd.append("--requireMeasuredTrace=true")
             print(f"[{run_index}/{total}] {' '.join(cmd)}", flush=True)
             subprocess.run(cmd, cwd=root, env=env_with_git(), check=True)
             row = read_csv_rows(csv_path)[0]

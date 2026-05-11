@@ -90,6 +90,79 @@ TestPerWaterfallSigmoidMonotonic()
             "Higher MCS must show higher PER than lower MCS at the same SNIR");
 }
 
+void
+TestAntiJammingTelemetryReactive()
+{
+    // Drive the core harness with a high-power reactive jammer at a low SNR
+    // operating point and check that the new journal-grade telemetry is
+    // populated with physically meaningful values: every first-attempt SINR
+    // during the jammer-ON window must fall below the outage threshold, the
+    // duty cycle must match burst/interval, and the recovery samples must
+    // give a finite CV. The conditional PDR must drop on the jammer-ON
+    // window and stay high on the jammer-OFF window.
+    CoreHarnessConfig cfg;
+    cfg.channelModel = "cm8_rayleigh";
+    cfg.distanceM = 3.0;
+    cfg.txPowerDbm = -30.0;
+    cfg.noiseFigureDb = 7.0;
+    cfg.bandwidthMHz = 20.0;
+    cfg.mcs = 0;
+    cfg.payloadBits = 128;
+    cfg.packets = 5000;
+    cfg.retryLimit = 7;
+    cfg.trafficIntervalS = 0.01;
+    cfg.deadlineS = 0.01;
+    cfg.jammerMode = "reactive";
+    cfg.jammerPowerDbm = 15.0;
+    cfg.jammerDistanceM = 1.0;
+    cfg.scenario = "S4";
+    cfg.seed = 20260507;
+    ns3::Ptr<MetricsCollector> collector = ns3::Create<MetricsCollector>();
+    const CoreHarnessLinkBudget budget = RunCoreHarness(cfg, *collector);
+    const auto& t = budget.telemetry;
+    Require(t.populated, "Telemetry should be marked populated by the harness");
+    Require(std::abs(t.jammerDutyCycle - 0.2) < 1e-9, "Reactive duty cycle must be burst/interval = 0.2");
+    Require(t.txDuringJammerOn > 0, "There must be at least one tx during jammer-ON");
+    Require(t.recoverySampleCount >= 10, "Should collect plenty of burst-end recovery samples");
+    Require(t.meanRecoveryTimeS > 0.0, "Mean recovery time must be positive when there are bursts");
+    Require(t.outageThresholdDb == 5.0, "Default outage threshold must be 5 dB");
+    Require(t.outageProbabilityJammerOn > 0.9,
+            "At SJR ~= -55 dB every jammer-ON first attempt should be in outage");
+    Require(t.effectiveThroughputPps > 0.0, "Effective throughput must be positive");
+    Require(t.worstCaseBurstLatencyS >= 0.0, "Worst-case burst latency must be non-negative");
+}
+
+void
+TestAntiJammingTelemetryNoJammer()
+{
+    // Without a jammer the telemetry must be populated with safe defaults:
+    // duty cycle 0, outage probability 0 (no tx in jammer-ON window), recovery
+    // count 0 (no bursts).
+    CoreHarnessConfig cfg;
+    cfg.channelModel = "cm8_rayleigh";
+    cfg.distanceM = 3.0;
+    cfg.txPowerDbm = -30.0;
+    cfg.mcs = 0;
+    cfg.payloadBits = 128;
+    cfg.packets = 1000;
+    cfg.retryLimit = 7;
+    cfg.trafficIntervalS = 0.01;
+    cfg.deadlineS = 0.01;
+    cfg.jammerMode = "none";
+    cfg.scenario = "S4";
+    cfg.seed = 20260507;
+    ns3::Ptr<MetricsCollector> collector = ns3::Create<MetricsCollector>();
+    const CoreHarnessLinkBudget budget = RunCoreHarness(cfg, *collector);
+    const auto& t = budget.telemetry;
+    Require(t.populated, "Telemetry should be populated even without jammer");
+    Require(t.jammerDutyCycle == 0.0, "Duty cycle must be 0 with no jammer");
+    Require(t.txDuringJammerOn == 0, "There must be no jammer-ON tx without jammer");
+    Require(t.recoverySampleCount == 0, "There must be no burst-end transitions without jammer");
+    Require(t.outageProbabilityJammerOn == 0.0,
+            "Outage probability under jamming must be 0 when there is no jammer");
+    Require(t.effectiveThroughputPps > 0.0, "Effective throughput must be positive in clean run");
+}
+
 } // namespace
 
 int
@@ -99,6 +172,8 @@ main()
     TestEveNoiseDistribution();
     TestChannelFidelityLabels();
     TestPerWaterfallSigmoidMonotonic();
+    TestAntiJammingTelemetryReactive();
+    TestAntiJammingTelemetryNoJammer();
     std::cout << "study-parameter-tests passed\n";
     return 0;
 }

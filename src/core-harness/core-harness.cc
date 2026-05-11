@@ -81,6 +81,7 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
     {
         pathLossDb = CalculateCm8PathLossDb(cfg.distanceM, cfg.cm8);
         budget.channelAbstraction = "controlled_rayleigh_path_loss_with_shadowing";
+        budget.fadingVarianceSource = useRayleigh ? "cm8_proxy" : "none";
     }
     else if (cfg.channelModel == "quadriga_raytraced")
     {
@@ -98,11 +99,18 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
             useRayleigh = false;
             budget.channelAbstraction =
                 "external_geometry_trace_scalar_path_loss_replay_with_trace_fading_std";
+            budget.fadingVarianceSource = "trace_column";
         }
         else
         {
             useRayleigh = cfg.cm8.rayleighFading;
             budget.channelAbstraction = "external_geometry_trace_scalar_path_loss_replay";
+            // No trace-derived fading variance: either the run is purely
+            // deterministic (path-loss only) or the operator forced CM8 proxy
+            // fading on the trace. Surface this honestly so reviewers can spot
+            // when the QuaDRiGa run inherits CM8 stochastic behaviour.
+            budget.fadingVarianceSource =
+                (useRayleigh || effectiveShadowStdDb > 0.0) ? "cm8_proxy" : "none";
         }
     }
     else
@@ -213,13 +221,22 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
         return false;
     };
 
-    // Per-packet bookkeeping for conditional PDR and recovery time.
+    // Per-packet bookkeeping for conditional PDR, recovery time, outage
+    // probability, worst-case burst latency, and deadline-streak telemetry.
     std::vector<bool> txDuringJammerOnFlag(cfg.packets, false);
     std::vector<bool> rxFlag(cfg.packets, false);
     std::vector<double> rxTimeS(cfg.packets, 0.0);
     uint32_t txDuringJammerOn = 0;
     uint32_t rxDuringJammerOn = 0;
     uint32_t lostDuringJammerOn = 0;
+    // Outage = SINR at first transmission attempt below the configured
+    // operating-point threshold (5 dB by default, matching reactive-jammer
+    // literature for BPSK control links). Tracked only for jammer-ON tx.
+    constexpr double kOutageThresholdDb = 5.0;
+    uint32_t outageJammerOnEvents = 0;
+    double worstCaseBurstLatencyS = 0.0;
+    uint32_t maxConsecutiveDeadlineMisses = 0;
+    uint32_t currentMissStreak = 0;
 
     for (uint32_t seq = 0; seq < cfg.packets; ++seq)
     {
@@ -230,6 +247,13 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
         if (jammerOnAtTx)
         {
             ++txDuringJammerOn;
+            // First-attempt SINR (no policy gain yet) drives the outage flag.
+            // Use snirAt with zero extra gain to mirror a reviewer's
+            // outage-probability convention.
+            if (snirAt(launchTimeS, 0.0) < kOutageThresholdDb)
+            {
+                ++outageJammerOnEvents;
+            }
         }
 
         double currentTimeS = launchTimeS;
@@ -279,11 +303,31 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
             if (jammerOnAtTx)
             {
                 ++rxDuringJammerOn;
+                if (finalDelayS > worstCaseBurstLatencyS)
+                {
+                    worstCaseBurstLatencyS = finalDelayS;
+                }
             }
         }
         else if (jammerOnAtTx)
         {
             ++lostDuringJammerOn;
+        }
+        // Deadline-miss streak: a packet is "missed" when it was lost OR
+        // delivered past the configured deadline. The longest run is exposed
+        // to the safety/availability discussion.
+        const bool missed = !success || finalDelayS > cfg.deadlineS;
+        if (missed)
+        {
+            ++currentMissStreak;
+            if (currentMissStreak > maxConsecutiveDeadlineMisses)
+            {
+                maxConsecutiveDeadlineMisses = currentMissStreak;
+            }
+        }
+        else
+        {
+            currentMissStreak = 0;
         }
     }
 
@@ -343,7 +387,48 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
             }
             telemetry.meanRecoveryTimeS = sum / static_cast<double>(recoverySamples.size());
             telemetry.recoverySampleCount = static_cast<uint32_t>(recoverySamples.size());
+            // Standard deviation: needed for the coefficient of variation
+            // exposed in AntiJammingMetricResult.
+            double sqSum = 0.0;
+            for (double v : recoverySamples)
+            {
+                const double d = v - telemetry.meanRecoveryTimeS;
+                sqSum += d * d;
+            }
+            telemetry.stdRecoveryTimeS =
+                std::sqrt(sqSum / static_cast<double>(recoverySamples.size()));
+            // p95: deterministic percentile over the sample set.
+            std::vector<double> sorted = recoverySamples;
+            std::sort(sorted.begin(), sorted.end());
+            const std::size_t idx = static_cast<std::size_t>(
+                std::min(sorted.size() - 1,
+                         static_cast<std::size_t>(std::round(0.95 * (sorted.size() - 1)))));
+            telemetry.p95RecoveryTimeS = sorted[idx];
         }
+    }
+
+    // Outage probability under jamming and worst-case burst latency.
+    telemetry.outageThresholdDb = kOutageThresholdDb;
+    telemetry.outageProbabilityJammerOn =
+        txDuringJammerOn > 0
+            ? static_cast<double>(outageJammerOnEvents) / static_cast<double>(txDuringJammerOn)
+            : 0.0;
+    telemetry.worstCaseBurstLatencyS = worstCaseBurstLatencyS;
+    telemetry.maxConsecutiveDeadlineMisses = maxConsecutiveDeadlineMisses;
+
+    // Effective throughput in packets/s over the offered-traffic window.
+    if (cfg.packets > 0 && cfg.trafficIntervalS > 0.0)
+    {
+        const double windowS = cfg.packets * cfg.trafficIntervalS;
+        uint32_t rxCount = 0;
+        for (uint32_t s = 0; s < cfg.packets; ++s)
+        {
+            if (rxFlag[s])
+            {
+                ++rxCount;
+            }
+        }
+        telemetry.effectiveThroughputPps = rxCount / windowS;
     }
 
     budget.telemetry = telemetry;

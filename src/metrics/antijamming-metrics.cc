@@ -66,7 +66,25 @@ ComputeAntiJammingMetrics(double signalPowerDbm,
     out.jammerDutyCycle = telemetry.jammerDutyCycle;
     out.meanRecoveryTimeS = telemetry.meanRecoveryTimeS;
     out.recoverySampleCount = telemetry.recoverySampleCount;
+    out.stdRecoveryTimeS = telemetry.stdRecoveryTimeS;
+    out.p95RecoveryTimeS = telemetry.p95RecoveryTimeS;
+    out.outageProbabilityJammerOn = telemetry.outageProbabilityJammerOn;
+    out.outageThresholdDb = telemetry.outageThresholdDb;
+    out.worstCaseBurstLatencyS = telemetry.worstCaseBurstLatencyS;
+    out.maxConsecutiveDeadlineMisses = telemetry.maxConsecutiveDeadlineMisses;
+    out.effectiveThroughputPps = telemetry.effectiveThroughputPps;
     out.recoveryTimeS = telemetry.meanRecoveryTimeS;
+    // Coefficient of variation of the recovery time distribution. Useful for
+    // claims like "the recovery time is consistent across bursts". NaN when
+    // the mean is non-positive or the distribution has fewer than 2 samples.
+    if (telemetry.recoverySampleCount >= 2 && telemetry.meanRecoveryTimeS > 0.0)
+    {
+        out.cvRecoveryTime = telemetry.stdRecoveryTimeS / telemetry.meanRecoveryTimeS;
+    }
+    else
+    {
+        out.cvRecoveryTime = NaN;
+    }
 
     // Conditional PDR: only meaningful when the harness actually tracked
     // per-packet jammer state and the jammer was active for part of the run.

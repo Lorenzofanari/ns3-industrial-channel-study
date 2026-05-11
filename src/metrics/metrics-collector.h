@@ -54,6 +54,23 @@ struct RunContext
     double eveSnirNoiseStdDb{0.0};
     uint32_t eveSnirDelaySlots{0};
     bool eveEstimationIdeal{true};
+
+    // Trace provenance (channel fidelity gating). Filled by the simulator for
+    // every CSV row so reviewers can immediately tell whether a result row
+    // relies on measured propagation data or on the documented synthetic
+    // placeholder shipped in `data/quadriga/`.
+    //  - For CM8 runs both fields are populated with the stochastic-proxy
+    //    semantics (`trace_provenance=cm8_stochastic_proxy`).
+    //  - For QuaDRiGa trace replay this carries through whatever the YAML
+    //    declares (`synthetic_placeholder` or `measured`).
+    std::string traceProvenance{"cm8_stochastic_proxy"};
+    // True only when the YAML / CLI explicitly enables the placeholder for
+    // final paper claims. Default false to keep the safety gate ON.
+    bool syntheticPlaceholderFinalClaimsAllowed{false};
+    // Source of the small-scale fading variance used at run time. One of
+    // `trace_column` (QuaDRiGa `fading_std_db`), `cm8_proxy` (CM8 log-normal +
+    // Rayleigh draws), or `none` (deterministic path-loss only).
+    std::string fadingVarianceSource{"cm8_proxy"};
 };
 
 struct RunMetrics

@@ -42,6 +42,34 @@ struct AntiJammingTelemetry
     // statistical post-processing decide whether the mean is well-defined.
     uint32_t recoverySampleCount{0};
 
+    // Standard deviation of the recovery time samples (s). NaN/0 when there
+    // is fewer than two samples or no burst transitions in the run.
+    double stdRecoveryTimeS{0.0};
+
+    // 95th percentile of the recovery time distribution (s). Useful for
+    // worst-case latency claims in control loops.
+    double p95RecoveryTimeS{0.0};
+
+    // P(SINR < outageThresholdDb) measured at the first-attempt instant of
+    // packets transmitted while the jammer was ON. This is a literature
+    // standard outage metric and is reported alongside the threshold used.
+    double outageProbabilityJammerOn{0.0};
+    double outageThresholdDb{5.0};
+
+    // Worst-case end-to-end delay observed for any packet whose first
+    // transmission attempt overlapped the jammer-ON window (s). 0 when no
+    // such packet was ever delivered.
+    double worstCaseBurstLatencyS{0.0};
+
+    // Longest streak of consecutive packets whose end-to-end delay either
+    // missed the deadline or whose delivery failed entirely. A direct
+    // input to safety/availability claims for closed-loop control.
+    uint32_t maxConsecutiveDeadlineMisses{0};
+
+    // Effective throughput in successfully delivered packets per second of
+    // wall-clock simulation time. Always populated by the harness.
+    double effectiveThroughputPps{0.0};
+
     // True when the harness actually populated this telemetry; lets readers
     // distinguish a zero-but-measured value from a missing measurement.
     bool populated{false};
@@ -73,6 +101,19 @@ struct AntiJammingMetricResult
     // Mean recovery time after a reactive burst ends (see telemetry struct).
     double meanRecoveryTimeS{0.0};
     uint32_t recoverySampleCount{0};
+    double stdRecoveryTimeS{0.0};
+    double cvRecoveryTime{0.0};         // std / mean, NaN when undefined
+    double p95RecoveryTimeS{0.0};
+    // Outage probability conditional on the jammer being active at the
+    // first-attempt instant.
+    double outageProbabilityJammerOn{0.0};
+    double outageThresholdDb{5.0};
+    // Worst-case latency seen by packets attempted during a jammer-ON window.
+    double worstCaseBurstLatencyS{0.0};
+    // Longest streak of consecutive packets missing the deadline or lost.
+    uint32_t maxConsecutiveDeadlineMisses{0};
+    // Goodput (packets/s) over the whole simulation window.
+    double effectiveThroughputPps{0.0};
     // Historical alias retained for CSV/JSON backwards compatibility.
     double recoveryTimeS{0.0};
 };

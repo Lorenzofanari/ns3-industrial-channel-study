@@ -11,7 +11,25 @@ from config_utils import read_csv_rows, to_float, write_csv_rows
 
 
 GROUP_KEYS = ["channel_fidelity", "channel_model", "scenario", "mcs", "payload_bits", "jammer_mode", "jammer_power_dbm"]
-METRICS = ["pdr", "plr", "per", "p95_delay_s", "deadline_miss_ratio", "sinr_under_jamming_db", "robustness_ratio"]
+METRICS = [
+    "pdr",
+    "plr",
+    "per",
+    "p95_delay_s",
+    "deadline_miss_ratio",
+    "sinr_under_jamming_db",
+    # Anti-jamming journal-grade metrics: included so the auto-generated
+    # summary table already exposes the journal-publication ready columns.
+    "sjr_db",
+    "jnr_db",
+    "jammer_duty_cycle",
+    "pdr_jammer_on",
+    "pdr_jammer_off",
+    "burst_induced_loss_ratio",
+    "mean_recovery_time_s",
+    "robustness_ratio",
+    "plr_increase_due_to_jammer",
+]
 
 
 def main() -> int:

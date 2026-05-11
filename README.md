@@ -118,42 +118,53 @@ python3 scripts/run_sweep.py --simulation-path ns3_wifi_yans --config configs/ba
 `run_sweep.py` refuses to aggregate rows whose `simulation_path` differs into a
 single CSV.
 
-SOA-comparable PER waterfall (CM8 vs QuaDRiGa, SNIR sweep, MCS 0/1/3):
+SOA-comparable PER waterfall (CM8 vs QuaDRiGa, SNIR sweep, MCS 0/1/3) and
+journal-grade anti-jamming campaign:
+
+```bash
+# Launch the full paper campaign (6 sharded parallel processes, ~1 hour wall
+# time on an 8-core box). Edit SNR_MIN / SNR_MAX / SNR_STEP env vars to
+# narrow the matrix.
+scripts/launch_paper_campaign.sh
+
+# Once all six shards exit, merge them into the single results.csv expected
+# by validate_trends / parse_results / plot_results / make_report:
+python3 scripts/merge_paper_shards.py --root results/paper_v2
+```
+
+Or run a single (channel, seed) shard manually:
 
 ```bash
 python3 scripts/run_sweep.py \
   --simulation-path ns3_core_harness \
   --config configs/paper_snr_sweep.yaml \
   --channel-model cm8_rayleigh \
-  --output-dir results/paper_snr_cm8 \
-  --snr-min 0 --snr-max 25 --snr-step 0.5 \
-  --packets-per-run 10000
-
-python3 scripts/run_sweep.py \
-  --simulation-path ns3_core_harness \
-  --config configs/paper_snr_sweep.yaml \
-  --channel-model quadriga_raytraced \
-  --output-dir results/paper_snr_quad \
-  --snr-min 0 --snr-max 25 --snr-step 0.5 \
-  --packets-per-run 10000
+  --output-dir results/paper_v2/cm8_rayleigh_seed20260507 \
+  --snr-min 0 --snr-max 22 --snr-step 0.5 \
+  --seed 20260507
 ```
 
 The CM8 PER waterfall spreads across SNIR due to Rayleigh + log-normal
 shadowing; the QuaDRiGa waterfall is steeper because the scalar trace replay
-contains no additional small-scale fading (the trace itself is presumed to
-already include the multipath structure).
+relies on the per-distance `fading_std_db` baked into the trace itself, with
+no extra synthetic Rayleigh.
 
 ## Reproducing The Paper
 
-Main paper archive:
+Main paper archive (see `RESULTS_FOR_PAPER.md` for the full plot/metric
+index and journal-ready captions):
 
 - simulation path: `ns3_core_harness`
 - channel fidelity: `proxy`
+- channels: CM8 at 3 m and 6 m, QuaDRiGa at 3/6/9/12 m
+- MCS: 0, 1, 3 (BPSK 1/2, QPSK 1/2, 16-QAM 1/2)
+- payloads: 128, 256, 512 bits
 - policies: `S4`, `S8`, `S9`
+- jammer matrix: none/constant/reactive at 10 dBm and 20 dBm
 - seeds: `20260507`, `20260508`, `20260509`
-- SNIR sweep: `0` to `25` dB in `0.5` dB steps, `51` points
-- packet count per point: `300000`
-- archive scale: `9.9144e9` launched packets, `33048` CSV rows
+- SNIR sweep: `0` to `22` dB in `0.5` dB steps, `45` points
+- packet count per point: `100000`
+- archive scale: ~1.09e5 CSV rows, ~1.09e10 launched packets
 
 Validation addendum:
 
@@ -162,6 +173,83 @@ Validation addendum:
 - purpose: packet-level contention/BlockAck validation for a subset of
   configurations
 - output must remain separate from the main paper archive
+
+## Journal-Grade Anti-Jamming Telemetry
+
+Every CSV row produced by `ns3_core_harness` now exports the following
+anti-jamming columns:
+
+| column                              | meaning                                                                  |
+|-------------------------------------|--------------------------------------------------------------------------|
+| `sjr_db`                            | Signal-to-Jammer Ratio (NaN/empty for no-jammer rows)                    |
+| `jnr_db`                            | Jammer-to-Noise Ratio                                                    |
+| `jammer_duty_cycle`                 | 0 for none, 1 for constant, `burst/interval` for reactive (=0.20 default)|
+| `pdr_jammer_on`                     | Conditional PDR over packets attempted while the jammer was emitting     |
+| `pdr_jammer_off`                    | Conditional PDR over packets attempted while the jammer was silent       |
+| `burst_induced_loss_ratio`          | `lost_during_jammer_on / lost_total`                                     |
+| `mean_recovery_time_s`              | Mean time from a reactive burst end to the next successful packet        |
+| `std_recovery_time_s`               | Standard deviation of the per-burst recovery samples                     |
+| `cv_recovery_time`                  | `std/mean` coefficient of variation (NaN when undefined)                 |
+| `p95_recovery_time_s`               | 95th percentile of the per-burst recovery distribution                   |
+| `outage_probability_jammer_on`      | P(first-attempt SINR < `outage_threshold_db`) given jammer ON            |
+| `outage_threshold_db`               | Threshold used for the outage probability (5 dB by default)              |
+| `worst_case_burst_latency_s`        | Worst e2e delay among packets that overlapped a jammer-ON burst           |
+| `max_consecutive_deadline_misses`   | Longest run of consecutive lost / late packets                            |
+| `effective_throughput_pps`          | Successfully delivered packets per second over the offered window         |
+| `recovery_sample_count`             | Number of burst-end transitions sampled                                    |
+| `recovery_time_s`                   | Legacy alias of `mean_recovery_time_s` (kept for back-compat)             |
+| `robustness_ratio`                  | `pdr_with_jammer / pdr_no_jammer` matched on all other dimensions         |
+| `plr_increase_due_to_jammer`        | `plr_with_jammer - plr_no_jammer`                                         |
+
+NaN values are emitted as empty CSV cells / JSON `null` so reviewers can
+distinguish "measured zero" from "undefined".
+
+## Channel-Fidelity Gate (synthetic vs measured QuaDRiGa traces)
+
+Every CSV row also carries a trace-provenance triplet so reviewers can audit
+which numbers depend on a measured trace and which depend on the documented
+synthetic placeholder:
+
+| column                                          | meaning                                                                        |
+|-------------------------------------------------|--------------------------------------------------------------------------------|
+| `trace_provenance`                              | `cm8_stochastic_proxy`, `synthetic_placeholder`, or `measured`                  |
+| `synthetic_placeholder_final_claims_allowed`    | Operator-acknowledged flag (default `false`)                                    |
+| `fading_variance_source`                        | `cm8_proxy`, `trace_column`, `none`, or `trace_or_path_loss_only`               |
+
+The simulator binary supports `--requireMeasuredTrace=true`, forwarded by
+`scripts/run_sweep.py --require-measured-trace`. Turn it on for the
+camera-ready pipeline: it refuses to start a QuaDRiGa run whose provenance is
+anything other than `measured`. See `RESULTS_FOR_PAPER.md` Section 11 for the
+measured-trace replacement plan.
+
+## Integral Yans Validation
+
+The companion validation pipeline runs the same SNR sweep on both
+`ns3_core_harness` and `ns3_wifi_yans` and reports the per-row PDR/PER gap so
+the validation envelope can sit in the main results section rather than as an
+appendix:
+
+```bash
+python3 scripts/run_cross_validation.py
+```
+
+Produces `results/cross_validation/cross_validation.csv` and
+`cross_validation_summary.md`. The default range is 10..20 dB at 2 dB steps,
+chosen so both paths are above the YansWifiPhy receiver sensitivity gate
+(~ -89 dBm at MCS 0 / 20 MHz). See `RESULTS_FOR_PAPER.md` Section 12.
+
+## Seed-Independence Audit
+
+```bash
+python3 scripts/check_seed_independence.py \
+    --input results/paper_v2/results.csv \
+    --output results/paper_v2/SEED_AUDIT.md
+```
+
+Audits the across-seeds standard deviation of PDR, PER, recovery time and p95
+delay for every cell, flags cells with PDR relative spread > 0.02, and writes
+both Markdown and JSON outputs. Demonstrates transferability across the
+documented seed list.
 
 ## Calibration Flags
 

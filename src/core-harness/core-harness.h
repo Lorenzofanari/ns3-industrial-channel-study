@@ -62,6 +62,12 @@ struct CoreHarnessLinkBudget
     double nominalDelayS{0.0};
     std::string channelAbstraction;
     std::string tracePath;
+    // What was actually used at run time to model small-scale fading. One of
+    //   "cm8_proxy"          (CM8 log-normal shadowing + Rayleigh draws)
+    //   "trace_column"       (QuaDRiGa fading_std_db read from the trace)
+    //   "none"               (deterministic path-loss only)
+    // Reported in the CSV so the channel-fidelity story is self-documenting.
+    std::string fadingVarianceSource{"cm8_proxy"};
     AntiJammingTelemetry telemetry;
 };
 

@@ -1,0 +1,29 @@
+# Cross-validation subset: a deliberately small matrix that is executable on
+# BOTH simulation paths (ns3_core_harness and ns3_wifi_yans). The companion
+# script scripts/run_cross_validation.py runs every cell on both backends and
+# computes the absolute and relative gap between the two PDR/PLR/PER outputs.
+#
+# The point of this subset is to make the validation addendum INTEGRAL to the
+# paper rather than appended: with a small, curated subset we can put a
+# validation-envelope figure in the main results section while keeping the
+# full statistical campaign on the harness.
+
+simulation:
+  simulation_time_s: 1.0
+  warmup_s: 0.5
+  seeds: [20260507, 20260508]
+  output_dir: results/cross_validation
+  packets_per_run: 20000
+  deadline_ms: 10.0
+
+sweep:
+  channel_model: [cm8_rayleigh]
+  scenario: [S4, S8, S9]
+  mcs: [0]
+  payload_bits: [128]
+  cm8_distance_m: [3]
+  jammer_mode: [none]
+  jammer_power_dbm: [0]
+
+quadriga:
+  trace_path: data/quadriga/example_trace.csv

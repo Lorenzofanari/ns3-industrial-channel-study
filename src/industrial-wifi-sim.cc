@@ -118,6 +118,17 @@ main(int argc, char* argv[])
     double eveSnirNoiseStdDb = 0.0;
     uint32_t eveSnirDelaySlots = 0;
     bool rayleighFading = true;
+    // Trace provenance gate (reviewer-grade channel-fidelity guard).
+    //   - `traceProvenance` is exported verbatim into the CSV. Allowed
+    //     values: synthetic_placeholder, measured, cm8_stochastic_proxy.
+    //   - `syntheticPlaceholderFinalClaimsAllowed` is forwarded to the CSV
+    //     so reviewers see the gate state per row.
+    //   - When `requireMeasuredTrace` is true the binary refuses to start
+    //     a QuaDRiGa run whose provenance is not `measured`. This is what a
+    //     paper-submission pipeline should turn on.
+    std::string traceProvenance = "";
+    bool syntheticPlaceholderFinalClaimsAllowed = false;
+    bool requireMeasuredTrace = false;
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("scenario", "Scenario label: S4, S8 or S9; S0 is accepted only with --enable-nopls-baseline", scenario);
@@ -164,6 +175,20 @@ main(int argc, char* argv[])
     cmd.AddValue("coherenceTimeMs", "CM8-like fading coherence time in ms", coherenceTimeMs);
     cmd.AddValue("industrialExcessLossDb", "CM8-like industrial excess loss in dB", industrialExcessLossDb);
     cmd.AddValue("rayleighFading", "Enable CM8-like Rayleigh fading", rayleighFading);
+    cmd.AddValue("traceProvenance",
+                 "Trace provenance tag: synthetic_placeholder, measured or cm8_stochastic_proxy. "
+                 "Leave empty to auto-detect (cm8_stochastic_proxy for CM8, synthetic_placeholder for "
+                 "the QuaDRiGa example trace).",
+                 traceProvenance);
+    cmd.AddValue("syntheticPlaceholderFinalClaimsAllowed",
+                 "Operator-acknowledged flag that the run can be used for final paper claims even with "
+                 "a synthetic trace. Default false; final-paper pipelines should keep it false.",
+                 syntheticPlaceholderFinalClaimsAllowed);
+    cmd.AddValue("requireMeasuredTrace",
+                 "Refuse to start QuaDRiGa runs whose trace_provenance is not 'measured'. Turn on in "
+                 "the camera-ready pipeline so synthetic placeholders cannot accidentally feed the "
+                 "paper figures.",
+                 requireMeasuredTrace);
     cmd.AddValue("output", "CSV output path", output);
     cmd.AddValue("jsonOutput", "JSON output path", jsonOutput);
     cmd.Parse(argc, argv);
@@ -193,6 +218,45 @@ main(int argc, char* argv[])
     if (simulationPath != "ns3_wifi_yans" && simulationPath != "ns3_core_harness")
     {
         throw std::runtime_error("simulationPath must be ns3_wifi_yans or ns3_core_harness");
+    }
+
+    // Channel-fidelity gate (reviewer-grade). For CM8 the run is stochastic
+    // proxy by construction; for QuaDRiGa we default to synthetic_placeholder
+    // unless the operator overrides --traceProvenance. The example_trace.csv
+    // ships as documented placeholder; pointing --tracePath at a different
+    // file is necessary (but not sufficient) for `--traceProvenance=measured`.
+    if (traceProvenance.empty())
+    {
+        if (channelModel == "cm8_rayleigh")
+        {
+            traceProvenance = "cm8_stochastic_proxy";
+        }
+        else if (channelModel == "quadriga_raytraced")
+        {
+            // Default to the safe (synthetic_placeholder) provenance so a
+            // missing CLI flag never accidentally tags rows as measured.
+            traceProvenance = "synthetic_placeholder";
+        }
+        else
+        {
+            traceProvenance = "unknown";
+        }
+    }
+    if (traceProvenance != "synthetic_placeholder" && traceProvenance != "measured" &&
+        traceProvenance != "cm8_stochastic_proxy" && traceProvenance != "unknown")
+    {
+        throw std::runtime_error(
+            "traceProvenance must be one of: synthetic_placeholder, measured, "
+            "cm8_stochastic_proxy");
+    }
+    if (channelModel == "quadriga_raytraced" && requireMeasuredTrace &&
+        traceProvenance != "measured")
+    {
+        throw std::runtime_error(
+            "requireMeasuredTrace is set but traceProvenance=" + traceProvenance +
+            "; refuse to feed final-paper figures with a non-measured trace. Run with "
+            "--traceProvenance=measured only once data/quadriga/<your_trace>.csv has been "
+            "replaced with measured QuaDRiGa data.");
     }
 
     RngSeedManager::SetSeed(seed);
@@ -252,6 +316,22 @@ main(int argc, char* argv[])
         context.eveSnirNoiseStdDb = eveSnirNoiseStdDb;
         context.eveSnirDelaySlots = eveSnirDelaySlots;
         context.eveEstimationIdeal = EveEstimationIdeal(eveConfig);
+        context.traceProvenance = traceProvenance;
+        context.syntheticPlaceholderFinalClaimsAllowed = syntheticPlaceholderFinalClaimsAllowed;
+        // Fading-variance source: drives reviewer-readable channel-fidelity
+        // semantics. The harness path knows the actual source from its own
+        // dispatch (trace-derived vs CM8 proxy vs deterministic) and overrides
+        // this field below; the Yans path keeps the default below.
+        if (channelModel == "cm8_rayleigh")
+        {
+            context.fadingVarianceSource = rayleighFading ? "cm8_proxy" : "none";
+        }
+        else if (channelModel == "quadriga_raytraced")
+        {
+            // Conservative default. The harness path will refine this once it
+            // confirms whether the trace actually provided fading_std_db.
+            context.fadingVarianceSource = "trace_or_path_loss_only";
+        }
         return context;
     };
 
@@ -289,6 +369,10 @@ main(int argc, char* argv[])
         const CoreHarnessLinkBudget budget = RunCoreHarness(harness, *collector);
 
         RunContext context = buildRunContext(budget.channelAbstraction, budget.tracePath);
+        // Refine fading variance source from the actual harness dispatch:
+        // the buildRunContext default is conservative because it cannot see
+        // whether the trace exposed fading_std_db.
+        context.fadingVarianceSource = budget.fadingVarianceSource;
         RunMetrics metrics = collector->Compute(context,
                                                 budget.signalPowerDbm,
                                                 budget.noiseFloorDbm,
