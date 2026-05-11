@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <numeric>
+#include <stdexcept>
 #include <sstream>
 
 namespace ns3
@@ -34,6 +37,12 @@ Percentile(std::vector<double> values, double p)
 std::string
 ToString(double value)
 {
+    if (std::isnan(value))
+    {
+        // CSV consumers treat empty as "missing"; the JSON writer rewrites
+        // empties to `null` so JSON stays parseable for journal pipelines.
+        return "";
+    }
     std::ostringstream ss;
     ss << std::setprecision(12) << value;
     return ss.str();
@@ -80,7 +89,8 @@ RunMetrics
 MetricsCollector::Compute(const RunContext& context,
                           double signalPowerDbm,
                           double noiseFloorDbm,
-                          double jammerPowerAtReceiverDbm) const
+                          double jammerPowerAtReceiverDbm,
+                          const AntiJammingTelemetry& telemetry) const
 {
     RunMetrics out;
     out.context = context;
@@ -135,7 +145,29 @@ MetricsCollector::Compute(const RunContext& context,
                                                 0.0,
                                                 out.per,
                                                 0.0,
-                                                context.jammerMode);
+                                                context.jammerMode,
+                                                telemetry);
+
+    if (telemetry.populated && context.jammerMode != "none")
+    {
+        const uint32_t txOn = telemetry.txDuringJammerOn;
+        const uint32_t txOff = out.transmittedPackets >= txOn ? out.transmittedPackets - txOn : 0;
+        const uint32_t rxOn = telemetry.rxAmongTxDuringJammerOn;
+        const uint32_t rxOff = out.receivedPackets >= rxOn ? out.receivedPackets - rxOn : 0;
+        out.antiJamming.pdrJammerOff = txOff > 0
+                                           ? static_cast<double>(rxOff) / static_cast<double>(txOff)
+                                           : std::numeric_limits<double>::quiet_NaN();
+        if (out.lostPackets > 0)
+        {
+            out.antiJamming.burstInducedLossRatio =
+                static_cast<double>(telemetry.lostDuringJammerOn) /
+                static_cast<double>(out.lostPackets);
+        }
+        else
+        {
+            out.antiJamming.burstInducedLossRatio = 0.0;
+        }
+    }
     return out;
 }
 
@@ -146,7 +178,11 @@ CsvHeader()
             "ns3_version",
             "seed",
             "scenario",
+            "policy",
+            "policy_label",
+            "simulation_path",
             "channel_model",
+            "channel_fidelity",
             "channel_abstraction",
             "trace_path",
             "mcs",
@@ -165,6 +201,14 @@ CsvHeader()
             "deadline_s",
             "phy_per_available",
             "per_definition",
+            "per_theta_m",
+            "per_slope",
+            "s8_rtx_snir_gain",
+            "s9_cooldown_symbols",
+            "eve_snir_bias_db",
+            "eve_snir_noise_std_db",
+            "eve_snir_delay_slots",
+            "eve_estimation_ideal",
             "transmitted_packets",
             "received_packets",
             "lost_packets",
@@ -187,6 +231,14 @@ CsvHeader()
             "noise_floor_dbm",
             "jammer_power_at_receiver_dbm",
             "sinr_under_jamming_db",
+            "sjr_db",
+            "jnr_db",
+            "jammer_duty_cycle",
+            "pdr_jammer_on",
+            "pdr_jammer_off",
+            "burst_induced_loss_ratio",
+            "mean_recovery_time_s",
+            "recovery_sample_count",
             "robustness_ratio",
             "plr_increase_due_to_jammer",
             "per_increase_due_to_jammer",
@@ -200,7 +252,11 @@ CsvRow(const RunMetrics& m)
             m.context.ns3Version,
             std::to_string(m.context.seed),
             m.context.scenario,
+            m.context.policy,
+            m.context.policyLabel,
+            m.context.simulationPath,
             m.context.channelModel,
+            m.context.channelFidelity,
             m.context.channelAbstraction,
             m.context.tracePath,
             std::to_string(m.context.mcs),
@@ -219,6 +275,14 @@ CsvRow(const RunMetrics& m)
             ToString(m.context.deadlineS),
             m.context.phyPerAvailable ? "true" : "false",
             m.context.perDefinition,
+            ToString(m.context.perThetaM),
+            ToString(m.context.perSlope),
+            ToString(m.context.s8RtxSnirGain),
+            std::to_string(m.context.s9CooldownSymbols),
+            ToString(m.context.eveSnirBiasDb),
+            ToString(m.context.eveSnirNoiseStdDb),
+            std::to_string(m.context.eveSnirDelaySlots),
+            m.context.eveEstimationIdeal ? "true" : "false",
             std::to_string(m.transmittedPackets),
             std::to_string(m.receivedPackets),
             std::to_string(m.lostPackets),
@@ -241,6 +305,14 @@ CsvRow(const RunMetrics& m)
             ToString(m.antiJamming.noiseFloorDbm),
             ToString(m.antiJamming.jammerPowerAtReceiverDbm),
             ToString(m.antiJamming.sinrDb),
+            ToString(m.antiJamming.sjrDb),
+            ToString(m.antiJamming.jnrDb),
+            ToString(m.antiJamming.jammerDutyCycle),
+            ToString(m.antiJamming.pdrJammerOn),
+            ToString(m.antiJamming.pdrJammerOff),
+            ToString(m.antiJamming.burstInducedLossRatio),
+            ToString(m.antiJamming.meanRecoveryTimeS),
+            std::to_string(m.antiJamming.recoverySampleCount),
             ToString(m.antiJamming.robustnessRatio),
             ToString(m.antiJamming.plrIncreaseDueToJammer),
             ToString(m.antiJamming.perIncreaseDueToJammer),
@@ -252,6 +324,24 @@ WriteCsv(const std::string& path, const RunMetrics& metrics)
 {
     std::filesystem::create_directories(std::filesystem::path(path).parent_path());
     std::ofstream out(path);
+    out << "# simulation_path: " << metrics.context.simulationPath << "\n";
+    out << "# channel_fidelity: " << metrics.context.channelFidelity << "\n";
+    if (metrics.context.simulationPath == "ns3_core_harness")
+    {
+        out << "# purpose: main paper statistical campaign (PER waterfall sigmoid on per-packet SNIR)\n";
+        out << "# stack: pure ns3::Simulator/RNG; no YansWifiPhy, no MAC contention, no BlockAck, no A-MPDU\n";
+        out << "# note: rows produced by this path are the primary evidence base. Do not aggregate\n";
+        out << "#   with rows whose simulation_path differs.\n";
+    }
+    else
+    {
+        out << "# purpose: packet-level behavioral validation addendum\n";
+        out << "# main_campaign_path: ns3_core_harness\n";
+        out << "# note: main campaign remains primary evidence base for statistical\n";
+        out << "#   sweep. This addendum provides packet-level contention/BlockAck\n";
+        out << "#   validation for a subset of configurations. Results should not be\n";
+        out << "#   aggregated with main CSV.\n";
+    }
     const auto header = CsvHeader();
     const auto row = CsvRow(metrics);
     for (std::size_t i = 0; i < header.size(); ++i)
@@ -286,7 +376,13 @@ WriteJson(const std::string& path, const RunMetrics& metrics)
                                  return std::isdigit(c);
                              });
         out << "  \"" << header[i] << "\": ";
-        if (boolean || numeric)
+        if (row[i].empty())
+        {
+            // Missing measurements (e.g. NaN telemetry on a no-jammer run)
+            // serialise to JSON null so consumers can branch cleanly.
+            out << "null";
+        }
+        else if (boolean || numeric)
         {
             out << row[i];
         }

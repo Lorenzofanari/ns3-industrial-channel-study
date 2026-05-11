@@ -174,8 +174,10 @@ QuadrigaTrace::LoadCsv(const std::string& path)
         tap.powerDb = ParseDouble(row, index, "power_db");
         tap.hasDoppler = index.find("doppler_hz") != index.end();
         tap.hasPhase = index.find("phase_rad") != index.end();
+        tap.hasFadingStd = index.find("fading_std_db") != index.end();
         tap.dopplerHz = ParseDouble(row, index, "doppler_hz");
         tap.phaseRad = ParseDouble(row, index, "phase_rad");
+        tap.fadingStdDb = ParseDouble(row, index, "fading_std_db");
         m_taps.push_back(tap);
     }
     if (m_taps.empty())
@@ -233,6 +235,11 @@ QuadrigaTrace::LoadJson(const std::string& path)
         {
             tap.hasPhase = true;
             tap.phaseRad = std::stod(fields.at("phase_rad"));
+        }
+        if (fields.find("fading_std_db") != fields.end())
+        {
+            tap.hasFadingStd = true;
+            tap.fadingStdDb = std::stod(fields.at("fading_std_db"));
         }
         m_taps.push_back(tap);
         pos = end + 1;
@@ -298,6 +305,62 @@ QuadrigaTrace::GetEffectiveDelayS(double distanceM) const
                                                   std::abs(b.distanceM - distanceM);
                                        });
     return best->delayS;
+}
+
+bool
+QuadrigaTrace::HasFadingStdDb() const
+{
+    for (const auto& tap : m_taps)
+    {
+        if (tap.hasFadingStd)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+double
+QuadrigaTrace::GetFadingStdDb(double distanceM) const
+{
+    if (m_taps.empty())
+    {
+        return 0.0;
+    }
+    const auto best = std::min_element(m_taps.begin(),
+                                       m_taps.end(),
+                                       [distanceM](const QuadrigaTap& a, const QuadrigaTap& b) {
+                                           return std::abs(a.distanceM - distanceM) <
+                                                  std::abs(b.distanceM - distanceM);
+                                       });
+    if (best->hasFadingStd)
+    {
+        return std::max(best->fadingStdDb, 0.0);
+    }
+    // Fallback: sample standard deviation of path_loss_db across all taps that
+    // share the nearest distance bucket. Useful when the trace exports several
+    // time-snapshot rows per (tx, rx, distance) and the trace itself is the
+    // source of small-scale variability.
+    const double targetDistance = best->distanceM;
+    double sum = 0.0;
+    double sumSq = 0.0;
+    std::size_t n = 0;
+    for (const auto& tap : m_taps)
+    {
+        if (std::abs(tap.distanceM - targetDistance) < 1e-9)
+        {
+            sum += tap.pathLossDb;
+            sumSq += tap.pathLossDb * tap.pathLossDb;
+            ++n;
+        }
+    }
+    if (n < 2)
+    {
+        return 0.0;
+    }
+    const double mean = sum / static_cast<double>(n);
+    const double var = std::max(0.0, sumSq / static_cast<double>(n) - mean * mean);
+    return std::sqrt(var * static_cast<double>(n) / static_cast<double>(n - 1));
 }
 
 std::string

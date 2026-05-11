@@ -41,7 +41,7 @@ def grouped_means(rows, group_keys, x_key, metric):
 
 
 def check_monotonic_distance(rows, metric, tolerance):
-    keys = ["channel_model", "scenario", "mcs", "payload_bits", "jammer_mode", "jammer_power_dbm"]
+    keys = ["channel_fidelity", "channel_model", "scenario", "mcs", "payload_bits", "jammer_mode", "jammer_power_dbm"]
     violations = []
     for group, series in grouped_means(rows, keys, "distance_m", metric).items():
         points = sorted(series.items())
@@ -61,7 +61,7 @@ def check_monotonic_distance(rows, metric, tolerance):
 
 
 def check_mcs_order(rows, metric, tolerance):
-    keys = ["channel_model", "scenario", "payload_bits", "distance_m", "jammer_mode", "jammer_power_dbm"]
+    keys = ["channel_fidelity", "channel_model", "scenario", "payload_bits", "distance_m", "jammer_mode", "jammer_power_dbm"]
     violations = []
     for group, series in grouped_means(rows, keys, "mcs", metric).items():
         if not {0.0, 1.0, 3.0}.issubset(series):
@@ -78,7 +78,7 @@ def check_mcs_order(rows, metric, tolerance):
 
 
 def check_jammer(rows, metric, tolerance):
-    keys = ["channel_model", "scenario", "mcs", "payload_bits", "distance_m"]
+    keys = ["channel_fidelity", "channel_model", "scenario", "mcs", "payload_bits", "distance_m"]
     by_group = defaultdict(lambda: defaultdict(list))
     for row in rows:
         group = tuple(row.get(k, "") for k in keys)

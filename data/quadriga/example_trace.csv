@@ -1,6 +1,5 @@
-tx_id,rx_id,distance_m,time_s,path_loss_db,delay_s,power_db,doppler_hz,phase_rad
-ap,sta1,3,0.0,68.0,0.0,-68.0,0.0,0.0
-ap,sta1,6,0.0,75.0,0.0,-75.0,0.0,0.0
-ap,sta1,9,0.0,82.0,0.0,-82.0,0.0,0.0
-ap,sta1,12,0.0,88.0,0.0,-88.0,0.0,0.0
-
+tx_id,rx_id,distance_m,time_s,path_loss_db,delay_s,power_db,doppler_hz,phase_rad,fading_std_db
+ap,sta1,3,0.0,68.0,0.0,-68.0,0.0,0.0,1.5
+ap,sta1,6,0.0,75.0,0.0,-75.0,0.0,0.0,2.0
+ap,sta1,9,0.0,82.0,0.0,-82.0,0.0,0.0,2.5
+ap,sta1,12,0.0,88.0,0.0,-88.0,0.0,0.0,3.0

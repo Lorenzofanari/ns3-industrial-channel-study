@@ -7,6 +7,7 @@ import argparse
 import csv
 import itertools
 import json
+import math
 import subprocess
 from pathlib import Path
 
@@ -34,8 +35,56 @@ def channel_args(name: str, root: Path) -> dict[str, str]:
             "--noiseFigureDb": str(cfg["noise_figure_db"]),
             "--bandwidthMHz": str(float(cfg["bandwidth_hz"]) / 1e6),
             "--tracePath": str(root / cfg["trace_path"]),
+            "--shadowingStdDb": str(cfg.get("shadowing_std_db", 0.0)),
+            "--rayleighFading": "true" if cfg.get("rayleigh_fading", False) else "false",
         }
     raise ValueError(f"unsupported channel {name}")
+
+
+def noise_floor_dbm(bandwidth_hz: float, noise_figure_db: float) -> float:
+    return -174.0 + 10.0 * math.log10(bandwidth_hz) + noise_figure_db
+
+
+def cm8_path_loss_db(distance_m: float, root: Path) -> float:
+    cfg = load_simple_yaml(root / "configs/channels/cm8_rayleigh_20mhz.yaml")
+    reference_distance_m = float(cfg.get("reference_distance_m", 1.0))
+    d = max(distance_m, reference_distance_m)
+    return (
+        float(cfg["reference_loss_db"])
+        + 10.0 * float(cfg["path_loss_exponent"]) * math.log10(d / reference_distance_m)
+        + float(cfg["industrial_excess_loss_db"])
+    )
+
+
+def quadriga_path_loss_db(distance_m: float, root: Path) -> float:
+    cfg = load_simple_yaml(root / "configs/channels/quadriga_raytraced.yaml")
+    rows = read_csv_rows(root / cfg["trace_path"])
+    if not rows:
+        raise ValueError("QuaDRiGa trace has no rows")
+    best = min(rows, key=lambda row: abs(float(row["distance_m"]) - distance_m))
+    return float(best["path_loss_db"])
+
+
+def nominal_path_loss_db(channel: str, distance_m: float, root: Path) -> float:
+    if channel == "cm8_rayleigh":
+        return cm8_path_loss_db(distance_m, root)
+    if channel == "quadriga_raytraced":
+        return quadriga_path_loss_db(distance_m, root)
+    raise ValueError(f"unsupported channel {channel}")
+
+
+def snr_values(min_db: float | None, max_db: float | None, step_db: float | None) -> list[float | None]:
+    if min_db is None and max_db is None and step_db is None:
+        return [None]
+    if min_db is None or max_db is None or step_db is None:
+        raise ValueError("--snr-min, --snr-max and --snr-step must be provided together")
+    if step_db <= 0.0:
+        raise ValueError("--snr-step must be positive")
+    count = int(round((max_db - min_db) / step_db))
+    values = [round(min_db + i * step_db, 10) for i in range(count + 1)]
+    if not values or values[-1] < max_db - 1e-9:
+        values.append(max_db)
+    return values
 
 
 def distance_values(channel: str, base: dict, root: Path, smoke: bool) -> list[float]:
@@ -68,6 +117,22 @@ def recompute_jammer_deltas(rows: list[dict[str, str]]) -> None:
         row["per_increase_due_to_jammer"] = str(per - base_per)
 
 
+def assert_single_channel_fidelity(rows: list[dict[str, str]], output_path: Path) -> None:
+    fidelities = sorted({row.get("channel_fidelity", "") for row in rows})
+    if len(fidelities) > 1:
+        raise RuntimeError(
+            f"{output_path} would mix channel_fidelity values {fidelities}; "
+            "filter proxy and scalar_geometry_trace runs into separate output files"
+        )
+    paths = sorted({row.get("simulation_path", "") for row in rows})
+    if len(paths) > 1:
+        raise RuntimeError(
+            f"{output_path} would mix simulation_path values {paths}; "
+            "main paper rows (ns3_core_harness) and addendum rows (ns3_wifi_yans) "
+            "must live in separate output files"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/base.yaml")
@@ -75,6 +140,12 @@ def main() -> int:
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--channel-model", action="append", default=None, help="Restrict sweep to one or more channel models; repeat for multiple models only when channel_fidelity matches")
+    parser.add_argument("--simulation-path", default="ns3_wifi_yans", choices=["ns3_wifi_yans", "ns3_core_harness"], help="Active simulator backend; ns3_core_harness is the main paper statistical campaign")
+    parser.add_argument("--packets-per-run", type=int, default=None)
+    parser.add_argument("--snr-min", type=float, default=None)
+    parser.add_argument("--snr-max", type=float, default=None)
+    parser.add_argument("--snr-step", type=float, default=None)
     args = parser.parse_args()
 
     root = ROOT
@@ -90,12 +161,13 @@ def main() -> int:
         ensure_binary(binary)
 
     seeds = base["simulation"]["seeds"]
-    channels = base["sweep"]["channel_model"]
+    channels = args.channel_model or base["sweep"]["channel_model"]
     scenarios = base["sweep"]["scenario"]
     mcs_values = base["sweep"]["mcs"]
     payload_bits_values = base["sweep"]["payload_bits"]
     jammer_modes = base["sweep"]["jammer_mode"]
     jammer_powers = base["sweep"]["jammer_power_dbm"]
+    target_snrs = snr_values(args.snr_min, args.snr_max, args.snr_step)
 
     if args.smoke:
         seeds = seeds[:1]
@@ -118,8 +190,9 @@ def main() -> int:
             distance_values(channel, base, root, args.smoke),
             jammer_modes,
             jammer_powers,
+            target_snrs,
         ):
-            *_, jammer_mode, jammer_power = combo
+            *_, jammer_mode, jammer_power, _target_snr = combo
             if jammer_mode == "none" and float(jammer_power) != 0.0:
                 continue
             if jammer_mode != "none" and float(jammer_power) == 0.0:
@@ -130,7 +203,7 @@ def main() -> int:
     run_index = 0
     for channel in channels:
         chan_args = channel_args(channel, root)
-        for seed, scenario, mcs, payload_bits, distance, jammer_mode, jammer_power in itertools.product(
+        for seed, scenario, mcs, payload_bits, distance, jammer_mode, jammer_power, target_snr in itertools.product(
             seeds,
             scenarios,
             mcs_values,
@@ -138,6 +211,7 @@ def main() -> int:
             distance_values(channel, base, root, args.smoke),
             jammer_modes,
             jammer_powers,
+            target_snrs,
         ):
             if jammer_mode == "none" and float(jammer_power) != 0.0:
                 continue
@@ -145,15 +219,25 @@ def main() -> int:
                 continue
             run_index += 1
             interval_ms = 10.0
-            packets = 50 if args.smoke else int(base["simulation"]["packets_per_run"])
+            packets = 50 if args.smoke else int(args.packets_per_run or base["simulation"]["packets_per_run"])
             sim_time_s = max(float(base["simulation"]["simulation_time_s"]), packets * interval_ms / 1000.0 + 0.2)
             if args.smoke:
                 sim_time_s = max(1.0, packets * interval_ms / 1000.0 + 0.2)
-            run_name = f"run_{run_index:06d}_{channel}_{scenario}_mcs{mcs}_{payload_bits}b_{distance}m_{jammer_mode}_{jammer_power}dbm_seed{seed}"
+            snr_label = "configured" if target_snr is None else f"snr{target_snr:g}db"
+            run_name = f"run_{run_index:06d}_{channel}_{scenario}_mcs{mcs}_{payload_bits}b_{distance}m_{jammer_mode}_{jammer_power}dbm_{snr_label}_seed{seed}"
             csv_path = runs_dir / f"{run_name}.csv"
             json_path = runs_dir / f"{run_name}.json"
+            tx_power_dbm = None
+            if target_snr is not None:
+                chan_cfg = load_simple_yaml(
+                    root / ("configs/channels/cm8_rayleigh_20mhz.yaml" if channel == "cm8_rayleigh" else "configs/channels/quadriga_raytraced.yaml")
+                )
+                nf = float(chan_cfg["noise_figure_db"])
+                bw_hz = float(chan_cfg["bandwidth_hz"])
+                tx_power_dbm = target_snr + noise_floor_dbm(bw_hz, nf) + nominal_path_loss_db(channel, float(distance), root)
             cmd = [
                 str(binary),
+                f"--simulationPath={args.simulation_path}",
                 f"--scenario={scenario}",
                 f"--channelModel={channel}",
                 f"--standard=80211ax",
@@ -173,11 +257,16 @@ def main() -> int:
                 f"--jsonOutput={json_path}",
             ]
             for key, value in chan_args.items():
+                if tx_power_dbm is not None and key == "--txPowerDbm":
+                    continue
                 cmd.append(f"{key}={value}")
+            if tx_power_dbm is not None:
+                cmd.append(f"--txPowerDbm={tx_power_dbm}")
             print(f"[{run_index}/{total}] {' '.join(cmd)}", flush=True)
             subprocess.run(cmd, cwd=root, env=env_with_git(), check=True)
             row = read_csv_rows(csv_path)[0]
             row["run_name"] = run_name
+            row["target_snr_db"] = "" if target_snr is None else str(target_snr)
             all_rows.append(row)
             all_json.append(json.loads(json_path.read_text()))
 
@@ -185,6 +274,7 @@ def main() -> int:
     results_json = output_dir / "results.json"
     recompute_jammer_deltas(all_rows)
     if all_rows:
+        assert_single_channel_fidelity(all_rows, results_csv)
         fieldnames = ["run_name"] + [name for name in all_rows[0].keys() if name != "run_name"]
         with results_csv.open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)

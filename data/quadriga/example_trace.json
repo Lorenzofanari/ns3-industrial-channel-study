@@ -1,6 +1,6 @@
 [
-  {"tx_id":"ap0","rx_id":"sta0","distance_m":3.0,"time_s":0.0,"path_loss_db":58.0,"delay_s":1.0e-8,"power_db":-58.0,"doppler_hz":0.0,"phase_rad":0.0},
-  {"tx_id":"ap0","rx_id":"sta0","distance_m":6.0,"time_s":0.0,"path_loss_db":66.0,"delay_s":2.0e-8,"power_db":-66.0,"doppler_hz":0.0,"phase_rad":0.4},
-  {"tx_id":"ap0","rx_id":"sta0","distance_m":9.0,"time_s":0.0,"path_loss_db":73.0,"delay_s":3.0e-8,"power_db":-73.0,"doppler_hz":0.0,"phase_rad":0.8},
-  {"tx_id":"ap0","rx_id":"sta0","distance_m":12.0,"time_s":0.0,"path_loss_db":80.0,"delay_s":4.0e-8,"power_db":-80.0,"doppler_hz":0.0,"phase_rad":1.2}
+  {"tx_id":"ap0","rx_id":"sta0","distance_m":3.0,"time_s":0.0,"path_loss_db":58.0,"delay_s":1.0e-8,"power_db":-58.0,"doppler_hz":0.0,"phase_rad":0.0,"fading_std_db":1.5},
+  {"tx_id":"ap0","rx_id":"sta0","distance_m":6.0,"time_s":0.0,"path_loss_db":66.0,"delay_s":2.0e-8,"power_db":-66.0,"doppler_hz":0.0,"phase_rad":0.4,"fading_std_db":2.0},
+  {"tx_id":"ap0","rx_id":"sta0","distance_m":9.0,"time_s":0.0,"path_loss_db":73.0,"delay_s":3.0e-8,"power_db":-73.0,"doppler_hz":0.0,"phase_rad":0.8,"fading_std_db":2.5},
+  {"tx_id":"ap0","rx_id":"sta0","distance_m":12.0,"time_s":0.0,"path_loss_db":80.0,"delay_s":4.0e-8,"power_db":-80.0,"doppler_hz":0.0,"phase_rad":1.2,"fading_std_db":3.0}
 ]

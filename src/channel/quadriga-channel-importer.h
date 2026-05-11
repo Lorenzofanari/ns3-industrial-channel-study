@@ -23,8 +23,13 @@ struct QuadrigaTap
     double powerDb{0.0};
     double dopplerHz{0.0};
     double phaseRad{0.0};
+    // Optional zero-mean Gaussian small-scale fading standard deviation in dB
+    // attached to this tap. Lets a scalar QuaDRiGa replay still expose some
+    // small-scale variability without falling back on CM8 Rayleigh draws.
+    double fadingStdDb{0.0};
     bool hasDoppler{false};
     bool hasPhase{false};
+    bool hasFadingStd{false};
 };
 
 class QuadrigaTrace
@@ -38,6 +43,14 @@ class QuadrigaTrace
     std::vector<double> GetDistances() const;
     double GetPathLossDb(double distanceM) const;
     double GetEffectiveDelayS(double distanceM) const;
+    // Per-distance small-scale fading standard deviation in dB. Prefers the
+    // `fading_std_db` column when present; otherwise falls back to the sample
+    // standard deviation of `path_loss_db` across all taps sharing the nearest
+    // distance bucket (so a trace that exports multiple time snapshots per
+    // distance still exposes its small-scale variance). Returns 0 when neither
+    // source is available.
+    double GetFadingStdDb(double distanceM) const;
+    bool HasFadingStdDb() const;
     std::string GetSourcePath() const;
 
   private:

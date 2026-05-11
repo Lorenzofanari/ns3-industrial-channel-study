@@ -28,6 +28,7 @@ def main() -> int:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     counts = {
+        "channel_fidelity": Counter(row.get("channel_fidelity", "") for row in rows),
         "channel_model": Counter(row.get("channel_model", "") for row in rows),
         "scenario": Counter(row.get("scenario", "") for row in rows),
         "mcs": Counter(row.get("mcs", "") for row in rows),
@@ -63,6 +64,7 @@ def main() -> int:
         "- `PER` is currently a packet-error proxy equal to application-observed lost/corrupted packets unless `phy_per_available=true` appears in the CSV.",
         "- MAC retransmissions can hide PHY errors; use both application-level PLR/PDR and PHY/MAC traces once explicit drop callbacks are added.",
         "- Synthetic QuaDRiGa placeholder traces are importer tests only and must not support final scientific claims.",
+        "- Never aggregate rows with different `channel_fidelity` values into one scientific estimate.",
         "- Do not remove trend violations; investigate the channel, PHY sensitivity, traffic load, seeds and metric definitions.",
         "",
     ]

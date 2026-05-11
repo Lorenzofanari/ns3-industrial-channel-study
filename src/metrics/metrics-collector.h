@@ -23,7 +23,11 @@ struct RunContext
     std::string ns3Version{"unknown"};
     uint32_t seed{1};
     std::string scenario{"S4"};
+    std::string policy{"S4"};
+    std::string policyLabel{"Baseline-PF"};
+    std::string simulationPath{"ns3_wifi_yans"};
     std::string channelModel{"cm8_rayleigh"};
+    std::string channelFidelity{"proxy"};
     std::string channelAbstraction;
     std::string tracePath;
     uint32_t mcs{0};
@@ -42,6 +46,14 @@ struct RunContext
     double deadlineS{0.01};
     bool phyPerAvailable{false};
     std::string perDefinition{"application_loss_proxy_until_phy_mac_traces_enabled"};
+    double perThetaM{3.0};
+    double perSlope{1.15};
+    double s8RtxSnirGain{1.35};
+    uint32_t s9CooldownSymbols{76};
+    double eveSnirBiasDb{0.0};
+    double eveSnirNoiseStdDb{0.0};
+    uint32_t eveSnirDelaySlots{0};
+    bool eveEstimationIdeal{true};
 };
 
 struct RunMetrics
@@ -72,7 +84,8 @@ class MetricsCollector : public SimpleRefCount<MetricsCollector>
     RunMetrics Compute(const RunContext& context,
                        double signalPowerDbm,
                        double noiseFloorDbm,
-                       double jammerPowerAtReceiverDbm) const;
+                       double jammerPowerAtReceiverDbm,
+                       const AntiJammingTelemetry& telemetry = {}) const;
 
   private:
     std::set<uint32_t> m_transmittedSeq;

@@ -75,7 +75,7 @@ def flatten_dict(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
 
 def read_csv_rows(path: Path) -> List[Dict[str, str]]:
     with path.open(newline="") as f:
-        return list(csv.DictReader(f))
+        return list(csv.DictReader(line for line in f if not line.startswith("#")))
 
 
 def write_csv_rows(path: Path, rows: Iterable[Dict[str, Any]], fieldnames: List[str] | None = None) -> None:

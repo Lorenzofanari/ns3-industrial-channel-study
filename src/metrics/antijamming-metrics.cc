@@ -2,11 +2,17 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace ns3
 {
 namespace industrial
 {
+
+namespace
+{
+constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
+} // namespace
 
 double
 DbmToMilliwatt(double dbm)
@@ -30,18 +36,78 @@ ComputeAntiJammingMetrics(double signalPowerDbm,
                           double baselinePlr,
                           double per,
                           double baselinePer,
-                          const std::string& jammerMode)
+                          const std::string& jammerMode,
+                          const AntiJammingTelemetry& telemetry)
 {
     AntiJammingMetricResult out;
     out.signalPowerDbm = signalPowerDbm;
     out.noiseFloorDbm = noiseFloorDbm;
     out.jammerPowerAtReceiverDbm = jammerPowerAtReceiverDbm;
-    const double interferenceMw = jammerMode == "none" ? 0.0 : DbmToMilliwatt(jammerPowerAtReceiverDbm);
+
+    const bool jammerOn = jammerMode != "none";
+    const double interferenceMw = jammerOn ? DbmToMilliwatt(jammerPowerAtReceiverDbm) : 0.0;
     out.sinrDb = signalPowerDbm - MilliwattToDbm(DbmToMilliwatt(noiseFloorDbm) + interferenceMw);
+
+    if (jammerOn)
+    {
+        out.sjrDb = signalPowerDbm - jammerPowerAtReceiverDbm;
+        out.jnrDb = jammerPowerAtReceiverDbm - noiseFloorDbm;
+    }
+    else
+    {
+        out.sjrDb = NaN;
+        out.jnrDb = NaN;
+    }
+
     out.robustnessRatio = baselinePdr > 0.0 ? pdr / baselinePdr : 0.0;
     out.plrIncreaseDueToJammer = plr - baselinePlr;
     out.perIncreaseDueToJammer = per - baselinePer;
-    out.recoveryTimeS = jammerMode == "reactive" ? 0.0 : 0.0;
+
+    out.jammerDutyCycle = telemetry.jammerDutyCycle;
+    out.meanRecoveryTimeS = telemetry.meanRecoveryTimeS;
+    out.recoverySampleCount = telemetry.recoverySampleCount;
+    out.recoveryTimeS = telemetry.meanRecoveryTimeS;
+
+    // Conditional PDR: only meaningful when the harness actually tracked
+    // per-packet jammer state and the jammer was active for part of the run.
+    if (telemetry.populated && jammerOn)
+    {
+        if (telemetry.txDuringJammerOn > 0)
+        {
+            out.pdrJammerOn = static_cast<double>(telemetry.rxAmongTxDuringJammerOn) /
+                              static_cast<double>(telemetry.txDuringJammerOn);
+        }
+        // Total losses across the run, derived from the PLR scalar to avoid
+        // requiring the caller to pass the integer counters again.
+        const double totalLosses = plr; // ratio relative to transmitted packets
+        if (totalLosses > 0.0 && telemetry.txDuringJammerOn > 0)
+        {
+            const double burstLossRatioOfTx =
+                static_cast<double>(telemetry.lostDuringJammerOn) /
+                static_cast<double>(telemetry.txDuringJammerOn);
+            // burst_induced_loss_ratio = lost_during_ON / total_lost; reuse the
+            // ratio definition by normalising against PLR rather than against
+            // total tx count.
+            out.burstInducedLossRatio = std::min(1.0, burstLossRatioOfTx * telemetry.jammerDutyCycle / totalLosses);
+        }
+    }
+    else
+    {
+        out.pdrJammerOn = NaN;
+        out.burstInducedLossRatio = NaN;
+    }
+
+    if (telemetry.populated)
+    {
+        // pdr_jammer_off is computed by the collector via the public
+        // RunMetrics view; the formula is symmetric to pdr_jammer_on so the
+        // collector fills it in. For safety leave NaN here.
+        out.pdrJammerOff = NaN;
+    }
+    else
+    {
+        out.pdrJammerOff = NaN;
+    }
     return out;
 }
 

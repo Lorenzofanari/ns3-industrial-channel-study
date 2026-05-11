@@ -10,7 +10,7 @@ from pathlib import Path
 from config_utils import read_csv_rows, to_float, write_csv_rows
 
 
-GROUP_KEYS = ["channel_model", "scenario", "mcs", "payload_bits", "jammer_mode", "jammer_power_dbm"]
+GROUP_KEYS = ["channel_fidelity", "channel_model", "scenario", "mcs", "payload_bits", "jammer_mode", "jammer_power_dbm"]
 METRICS = ["pdr", "plr", "per", "p95_delay_s", "deadline_miss_ratio", "sinr_under_jamming_db", "robustness_ratio"]
 
 

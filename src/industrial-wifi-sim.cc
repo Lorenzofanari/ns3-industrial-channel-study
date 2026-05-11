@@ -1,7 +1,9 @@
 #include "channel/channel-abstraction.h"
+#include "core-harness/core-harness.h"
 #include "jammer/constant-jammer.h"
 #include "jammer/reactive-jammer.h"
 #include "metrics/metrics-collector.h"
+#include "study-parameters.h"
 #include "traffic/periodic-control-app.h"
 
 #include "ns3/applications-module.h"
@@ -21,6 +23,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -80,6 +83,7 @@ main(int argc, char* argv[])
     std::string channelModel = "cm8_rayleigh";
     std::string standard = "80211ax";
     std::string jammerMode = "none";
+    std::string simulationPath = "ns3_wifi_yans";
     std::string output = "results/one_run.csv";
     std::string jsonOutput = "results/one_run.json";
     std::string tracePath = "data/quadriga/example_trace.csv";
@@ -88,6 +92,8 @@ main(int argc, char* argv[])
     uint32_t payloadBits = 128;
     uint32_t packets = 1000;
     uint32_t retryLimit = 7;
+    uint32_t s9CooldownSymbols = 76;
+    bool enableNoplsBaseline = false;
     double distanceM = 1.0;
     double jammerPowerDbm = 10.0;
     double jammerDistanceM = 1.0;
@@ -103,12 +109,24 @@ main(int argc, char* argv[])
     double shadowingStdDb = 2.0;
     double coherenceTimeMs = 5.0;
     double industrialExcessLossDb = 3.0;
+    double perThetaBpskDb = 3.0;
+    double perThetaQpskDb = 6.0;
+    double perTheta16QamDb = 15.5;
+    double perSlope = 1.15;
+    double s8RtxSnirGain = 1.35;
+    double eveSnirBiasDb = 0.0;
+    double eveSnirNoiseStdDb = 0.0;
+    uint32_t eveSnirDelaySlots = 0;
     bool rayleighFading = true;
 
     CommandLine cmd(__FILE__);
-    cmd.AddValue("scenario", "Scenario label: S4, S8 or S9", scenario);
+    cmd.AddValue("scenario", "Scenario label: S4, S8 or S9; S0 is accepted only with --enable-nopls-baseline", scenario);
     cmd.AddValue("channelModel", "Channel model: cm8_rayleigh or quadriga_raytraced", channelModel);
     cmd.AddValue("standard", "Wi-Fi standard: 80211ax or 80211be", standard);
+    cmd.AddValue("simulationPath",
+                 "Simulation path: ns3_wifi_yans (packet-level addendum, YansWifiPhy stack) "
+                 "or ns3_core_harness (statistical Monte-Carlo PER-waterfall campaign)",
+                 simulationPath);
     cmd.AddValue("mcs", "MCS index, supported study values: 0, 1, 3", mcs);
     cmd.AddValue("payloadBits", "Application payload size in bits", payloadBits);
     cmd.AddValue("distanceM", "STA-AP distance in meters", distanceM);
@@ -118,6 +136,20 @@ main(int argc, char* argv[])
     cmd.AddValue("seed", "RNG seed", seed);
     cmd.AddValue("packets", "Number of control packets to transmit", packets);
     cmd.AddValue("retryLimit", "Wi-Fi long/short retry limit metadata", retryLimit);
+    cmd.AddValue("enable-nopls-baseline", "Enable S0/NoPLS baseline policy metadata", enableNoplsBaseline);
+    cmd.AddValue("per-theta-bpsk", "BPSK-1/2 PER waterfall midpoint in dB", perThetaBpskDb);
+    cmd.AddValue("per-theta-qpsk", "QPSK-1/2 PER waterfall midpoint in dB", perThetaQpskDb);
+    cmd.AddValue("per-theta-16qam", "16QAM-3/4 PER waterfall midpoint in dB", perTheta16QamDb);
+    cmd.AddValue("per-slope", "PER waterfall slope calibration parameter", perSlope);
+    cmd.AddValue("s8-rtx-snir-gain", "S8 opportunistic retransmission SNIR gain factor", s8RtxSnirGain);
+    // S9 cooldown: 76 OFDM symbols at T_sym=16us => ~1.216 ms.
+    // Purpose: prevent repeated trigger oscillations across consecutive
+    // short packets. Not derived from IEEE 802.11ax standard timing.
+    // To sweep: use --s9-cooldown-symbols CLI argument.
+    cmd.AddValue("s9-cooldown-symbols", "S9 harness cooldown in OFDM symbols", s9CooldownSymbols);
+    cmd.AddValue("eve-snir-bias-db", "Additive bias on gamma_E estimate in dB", eveSnirBiasDb);
+    cmd.AddValue("eve-snir-noise-std-db", "Zero-mean Gaussian gamma_E estimate noise std in dB", eveSnirNoiseStdDb);
+    cmd.AddValue("eve-snir-delay-slots", "Scheduling slots by which gamma_E estimate is stale", eveSnirDelaySlots);
     cmd.AddValue("txPowerDbm", "STA/AP transmit power in dBm", txPowerDbm);
     cmd.AddValue("noiseFigureDb", "Receiver noise figure in dB", noiseFigureDb);
     cmd.AddValue("bandwidthMHz", "Channel bandwidth in MHz", bandwidthMHz);
@@ -138,6 +170,14 @@ main(int argc, char* argv[])
 
     SetScenarioDefaults(scenario, retryLimit);
 
+    if (scenario == "S0" && !enableNoplsBaseline)
+    {
+        throw std::runtime_error("S0/NoPLS requires --enable-nopls-baseline=true");
+    }
+    if (scenario != "S0" && scenario != "S4" && scenario != "S8" && scenario != "S9")
+    {
+        throw std::runtime_error("scenario must be S4, S8, S9, or gated S0");
+    }
     if (mcs != 0 && mcs != 1 && mcs != 3)
     {
         throw std::runtime_error("This study only supports MCS 0, 1 and 3");
@@ -149,6 +189,10 @@ main(int argc, char* argv[])
     if (standard != "80211ax" && standard != "80211be")
     {
         throw std::runtime_error("standard must be 80211ax or 80211be");
+    }
+    if (simulationPath != "ns3_wifi_yans" && simulationPath != "ns3_core_harness")
+    {
+        throw std::runtime_error("simulationPath must be ns3_wifi_yans or ns3_core_harness");
     }
 
     RngSeedManager::SetSeed(seed);
@@ -164,6 +208,97 @@ main(int argc, char* argv[])
     cm8.coherenceTimeMs = coherenceTimeMs;
     cm8.industrialExcessLossDb = industrialExcessLossDb;
     cm8.rayleighFading = rayleighFading;
+
+    const PerWaterfallConfig perConfig{perThetaBpskDb, perThetaQpskDb, perTheta16QamDb, perSlope, 1e-8};
+    const EveEstimationConfig eveConfig{eveSnirBiasDb, eveSnirNoiseStdDb, eveSnirDelaySlots};
+
+    auto buildRunContext = [&](const std::string& abstraction,
+                               const std::string& effectiveTracePath) {
+        RunContext context;
+        context.gitCommit = GetGitCommit();
+        context.ns3Version = Version::ShortVersion();
+        context.seed = seed;
+        context.scenario = scenario;
+        context.policy = scenario;
+        context.policyLabel = PolicyLabel(scenario);
+        context.simulationPath = simulationPath;
+        context.channelModel = ChannelDisplayName(channelModel);
+        context.channelFidelity = ToString(ChannelFidelityForModel(channelModel));
+        context.channelAbstraction = abstraction;
+        context.tracePath = effectiveTracePath;
+        context.mcs = mcs;
+        context.payloadBits = payloadBits;
+        context.distanceM = distanceM;
+        context.jammerMode = jammerMode;
+        context.jammerPowerDbm = jammerMode != "none" ? jammerPowerDbm : 0.0;
+        context.standard = standard;
+        context.dataMode = DataModeFor(mcs, standard);
+        context.retryLimit = retryLimit;
+        context.txPowerDbm = txPowerDbm;
+        context.noiseFigureDb = noiseFigureDb;
+        context.bandwidthMHz = bandwidthMHz;
+        context.simulationTimeS = simTimeS;
+        context.trafficIntervalS = intervalMs / 1000.0;
+        context.deadlineS = deadlineMs / 1000.0;
+        context.phyPerAvailable = simulationPath == "ns3_core_harness";
+        context.perDefinition = simulationPath == "ns3_core_harness"
+                                    ? "per_waterfall_sigmoid_on_per_packet_snir"
+                                    : "application_loss_proxy_until_phy_mac_traces_enabled";
+        context.perThetaM = PerThetaForMcs(mcs, perConfig);
+        context.perSlope = perSlope;
+        context.s8RtxSnirGain = s8RtxSnirGain;
+        context.s9CooldownSymbols = s9CooldownSymbols;
+        context.eveSnirBiasDb = eveSnirBiasDb;
+        context.eveSnirNoiseStdDb = eveSnirNoiseStdDb;
+        context.eveSnirDelaySlots = eveSnirDelaySlots;
+        context.eveEstimationIdeal = EveEstimationIdeal(eveConfig);
+        return context;
+    };
+
+    if (simulationPath == "ns3_core_harness")
+    {
+        if (jammerMode != "none" && jammerMode != "constant" && jammerMode != "reactive")
+        {
+            throw std::runtime_error("jammerMode must be none, constant or reactive");
+        }
+
+        CoreHarnessConfig harness;
+        harness.channelModel = channelModel;
+        harness.tracePath = tracePath;
+        harness.cm8 = cm8;
+        harness.distanceM = distanceM;
+        harness.txPowerDbm = txPowerDbm;
+        harness.noiseFigureDb = noiseFigureDb;
+        harness.bandwidthMHz = bandwidthMHz;
+        harness.mcs = mcs;
+        harness.payloadBits = payloadBits;
+        harness.packets = packets;
+        harness.retryLimit = retryLimit;
+        harness.trafficIntervalS = intervalMs / 1000.0;
+        harness.deadlineS = deadlineMs / 1000.0;
+        harness.jammerMode = jammerMode;
+        harness.jammerPowerDbm = jammerPowerDbm;
+        harness.jammerDistanceM = jammerDistanceM;
+        harness.scenario = scenario;
+        harness.per = perConfig;
+        harness.s8RtxSnirGainDb = s8RtxSnirGain;
+        harness.s9CooldownSymbols = s9CooldownSymbols;
+        harness.seed = seed;
+
+        Ptr<MetricsCollector> collector = Create<MetricsCollector>();
+        const CoreHarnessLinkBudget budget = RunCoreHarness(harness, *collector);
+
+        RunContext context = buildRunContext(budget.channelAbstraction, budget.tracePath);
+        RunMetrics metrics = collector->Compute(context,
+                                                budget.signalPowerDbm,
+                                                budget.noiseFloorDbm,
+                                                budget.jammerPowerAtReceiverDbm,
+                                                budget.telemetry);
+        WriteCsv(output, metrics);
+        WriteJson(jsonOutput, metrics);
+        Simulator::Destroy();
+        return 0;
+    }
 
     ChannelRuntimeConfig channelConfig;
     channelConfig.model = channelModel;
@@ -334,30 +469,7 @@ main(int argc, char* argv[])
     Simulator::Stop(Seconds(simTimeS + warmupS + 1.0));
     Simulator::Run();
 
-    RunContext context;
-    context.gitCommit = GetGitCommit();
-    context.ns3Version = Version::ShortVersion();
-    context.seed = seed;
-    context.scenario = scenario;
-    context.channelModel = channelModel;
-    context.channelAbstraction = channelSummary.abstraction;
-    context.tracePath = channelSummary.tracePath;
-    context.mcs = mcs;
-    context.payloadBits = payloadBits;
-    context.distanceM = distanceM;
-    context.jammerMode = jammerMode;
-    context.jammerPowerDbm = jammerEnabled ? jammerPowerDbm : 0.0;
-    context.standard = standard;
-    context.dataMode = dataMode;
-    context.retryLimit = retryLimit;
-    context.txPowerDbm = txPowerDbm;
-    context.noiseFigureDb = noiseFigureDb;
-    context.bandwidthMHz = bandwidthMHz;
-    context.simulationTimeS = simTimeS;
-    context.trafficIntervalS = intervalMs / 1000.0;
-    context.deadlineS = deadlineMs / 1000.0;
-    context.phyPerAvailable = false;
-    context.perDefinition = "application_loss_proxy_until_phy_mac_traces_enabled";
+    RunContext context = buildRunContext(channelSummary.abstraction, channelSummary.tracePath);
 
     const double signalPowerDbm = NominalRxPowerDbm(txPowerDbm, channelSummary.nominalPathLossDb);
     const double noiseFloorDbm = CalculateNoiseFloorDbm(bandwidthMHz * 1e6, noiseFigureDb);
