@@ -1,0 +1,18 @@
+name: cm8_rayleigh
+description: CM8-like industrial Rayleigh/NLOS abstraction at 20 MHz.
+carrier_frequency_hz: 5.18e9
+bandwidth_hz: 20e6
+max_distance_m: 6
+distance_m: [1, 2, 3, 4, 5, 6]
+tx_power_dbm: 18
+noise_figure_db: 7
+path_loss_exponent: 2.2
+reference_loss_db: 43
+shadowing_std_db: 2.0
+rayleigh_fading: true
+coherence_time_ms: 5
+industrial_excess_loss_db: 3
+receiver_sensitivity_dbm: -95
+packet_detection_threshold_dbm: -90
+snr_to_per: ns3_error_model
+

@@ -1,0 +1,14 @@
+name: quadriga_raytraced
+description: External ray-traced / QuaDRiGa trace replay.
+trace_path: data/quadriga/example_trace.csv
+distance_source: trace_file
+abstraction: path_loss_or_effective_tap_power
+carrier_frequency_hz: 5.18e9
+bandwidth_hz: 20e6
+tx_power_dbm: 18
+noise_figure_db: 7
+receiver_sensitivity_dbm: -95
+packet_detection_threshold_dbm: -90
+synthetic_placeholder_allowed: true
+synthetic_placeholder_final_claims: false
+

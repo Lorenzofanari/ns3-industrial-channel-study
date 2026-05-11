@@ -1,0 +1,11 @@
+name: S9
+description: Critical-control reallocation policy for safety-sensitive packets.
+mac:
+  rts_cts: false
+  qos: true
+  retry_limit: 7
+scheduler:
+  policy: critical_control_reallocation
+  safety_priority: true
+  anti_jamming_adaptation: true
+

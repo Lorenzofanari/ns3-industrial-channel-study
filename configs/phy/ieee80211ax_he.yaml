@@ -1,0 +1,11 @@
+name: ieee80211ax_he
+standard: 80211ax
+bandwidth_mhz: 20
+guard_interval_ns: 3200
+mcs: [0, 1, 3]
+mcs_to_mode:
+  0: HeMcs0
+  1: HeMcs1
+  3: HeMcs3
+spatial_streams: 1
+

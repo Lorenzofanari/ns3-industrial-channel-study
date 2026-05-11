@@ -1,0 +1,11 @@
+name: S8
+description: Channel-aware TDMA-like policy with opportunistic retransmission emphasis.
+mac:
+  rts_cts: false
+  qos: true
+  retry_limit: 7
+scheduler:
+  policy: channel_aware_tdma_rtx_opp
+  safety_priority: true
+  anti_jamming_adaptation: false
+

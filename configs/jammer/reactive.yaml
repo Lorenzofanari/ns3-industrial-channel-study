@@ -1,0 +1,8 @@
+name: reactive
+enabled: true
+mode: reactive
+power_dbm: 10
+packet_bytes: 1200
+burst_interval_ms: 20
+burst_duration_ms: 4
+

@@ -1,0 +1,7 @@
+name: constant
+enabled: true
+mode: constant
+power_dbm: 10
+packet_bytes: 1200
+interval_ms: 1
+

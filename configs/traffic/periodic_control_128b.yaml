@@ -1,0 +1,6 @@
+name: periodic_control_128b
+payload_bits: 128
+interval_ms: 10
+deadline_ms: 10
+safety_critical: true
+

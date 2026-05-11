@@ -1,0 +1,11 @@
+name: S4
+description: Validated baseline IEEE 802.11ax/HE scenario.
+mac:
+  rts_cts: false
+  qos: true
+  retry_limit: 7
+scheduler:
+  policy: baseline
+  safety_priority: false
+  anti_jamming_adaptation: false
+

@@ -1,0 +1,6 @@
+name: periodic_control_512b
+payload_bits: 512
+interval_ms: 10
+deadline_ms: 10
+safety_critical: true
+
