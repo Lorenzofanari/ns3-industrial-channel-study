@@ -11,6 +11,18 @@ namespace ns3
 namespace industrial
 {
 
+// Reactive jammer model. References (see BIBLIOGRAPHY.md):
+//   [Bay08] Bayraktaroglu et al., "On the Performance of IEEE 802.11 under
+//           Jamming", IEEE INFOCOM 2008. Foundational analytical model for
+//           reactive jammers on 802.11 (channel-aware, jams ongoing tx).
+//   [Pel11] Pelechrinis et al., "Denial of Service Attacks in Wireless
+//           Networks: The Case of Jammers", IEEE COMST 13(2), 2011.
+//   [Gri21] Pirayesh & Zeng, "Jamming Attacks and Anti-Jamming Strategies in
+//           Wireless Networks: A Comprehensive Survey", IEEE COMST 24(2),
+//           2022 (arXiv:2101.00292). Notes the < 4 us detect-to-burst budget
+//           of a real reactive PHY attacker; the Yans-path implementation here
+//           is a co-station MAC-level proxy and is documented as such in the
+//           README and in core-harness telemetry.
 struct ReactiveJammerConfig
 {
     bool enabled{false};

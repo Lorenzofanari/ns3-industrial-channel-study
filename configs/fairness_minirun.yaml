@@ -1,0 +1,39 @@
+# Minimal representative fairness campaign (6 STAs, core harness).
+#
+# Purpose:
+# - Avoid rerunning the full paper_v2 matrix.
+# - Probe fairness under a compact CM8-only, two-distance, three-SNR grid.
+#
+# Execution:
+# - `simulation.simulation_path` selects `ns3_core_harness` so multi-user round-robin
+#   and per-user CSV fields are active.
+# - `fairness.users` is forwarded as `--users` (packet index seq belongs to STA seq % users).
+#
+# Exported metrics (see CSV columns):
+# - num_users, per_user_pdr, per_user_throughput_pps, per_user_p95_delay_s,
+#   jain_fairness_index (Jain on per-user PDR).
+
+simulation:
+  simulation_path: ns3_core_harness
+  simulation_time_s: 1.0
+  warmup_s: 0.5
+  seeds: [20260507, 20260508, 20260509]
+  output_dir: results/fairness_minirun
+  packets_per_run: 100000
+  deadline_ms: 10.0
+
+sweep:
+  channel_model: [cm8_rayleigh]
+  scenario: [S4, S8, S9]
+  mcs: [0, 1, 3]
+  payload_bits: [256]
+  cm8_distance_m: [3, 6]
+  jammer_mode: [none, reactive]
+  jammer_power_dbm: [0, 20]
+
+snr:
+  target_snr_db: [12, 16, 20]
+
+fairness:
+  users: 6
+  required_metrics: [per_user_pdr, per_user_throughput_pps, per_user_p95_delay_s, jain_fairness_index]

@@ -15,16 +15,20 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from pathlib import Path
 
 from config_utils import ROOT, read_csv_rows
 
 
+SHARD_RE = re.compile(r"^(cm8_rayleigh|inf_nlos_dl|quadriga_raytraced)_seed\d+$")
+
+
 def find_shards(root: Path) -> list[Path]:
     shards = []
     for child in sorted(root.iterdir()):
-        if child.is_dir() and (child / "results.csv").exists():
+        if child.is_dir() and SHARD_RE.match(child.name) and (child / "results.csv").exists():
             shards.append(child)
     return shards
 

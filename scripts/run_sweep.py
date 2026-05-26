@@ -14,9 +14,38 @@ from pathlib import Path
 from config_utils import ROOT, env_with_git, ensure_binary, load_simple_yaml, quadriga_distances, read_csv_rows, scenario_retry_limit
 
 
+CHANNEL_YAML = {
+    # Engineering proxy historically shipped with the repository (lighter than
+    # CM8 NLOS literature; see BIBLIOGRAPHY.md for the explicit deviation).
+    "cm8_rayleigh": "configs/channels/cm8_rayleigh_20mhz.yaml",
+    # 3GPP TR 38.901 §7.4.1 Indoor Factory NLOS Dense Clutter Low BS
+    # [3GPP38901]. Modern literature reference for industrial wireless at
+    # 0.5-100 GHz; this study uses fc = 5.18 GHz.
+    "inf_nlos_dl": "configs/channels/inf_nlos_dl_5ghz.yaml",
+    # External geometry trace replay (QuaDRiGa [Jae14]); scalar path-loss only
+    # until the spectrum/SpectrumWifiPhy path is wired up.
+    "quadriga_raytraced": "configs/channels/quadriga_raytraced.yaml",
+}
+
+
+# S9 ablation variants from [Fan26] §6.8 (Tab. 11). Each name maps to a set of
+# `--s9-ablation-disable-*` CLI flags. `full` is the no-ablation reference and
+# therefore emits no flag, so the row coincides with default S9 modulo the
+# proactive-defer enablement (which is always true for ablation campaigns).
+S9_ABLATION_VARIANTS = {
+    "full": {},
+    "no_jammer_flag": {"s9-ablation-disable-jammer-flag": True},
+    "no_cooldown": {"s9-ablation-disable-cooldown": True},
+    "snir_only": {
+        "s9-ablation-disable-jammer-flag": True,
+        "s9-ablation-disable-per-margin": True,
+    },
+}
+
+
 def channel_args(name: str, root: Path) -> dict[str, str]:
-    if name == "cm8_rayleigh":
-        cfg = load_simple_yaml(root / "configs/channels/cm8_rayleigh_20mhz.yaml")
+    if name in ("cm8_rayleigh", "inf_nlos_dl"):
+        cfg = load_simple_yaml(root / CHANNEL_YAML[name])
         return {
             "--txPowerDbm": str(cfg["tx_power_dbm"]),
             "--noiseFigureDb": str(cfg["noise_figure_db"]),
@@ -26,7 +55,8 @@ def channel_args(name: str, root: Path) -> dict[str, str]:
             "--shadowingStdDb": str(cfg["shadowing_std_db"]),
             "--coherenceTimeMs": str(cfg["coherence_time_ms"]),
             "--industrialExcessLossDb": str(cfg["industrial_excess_loss_db"]),
-            "--rayleighFading": "true" if cfg["rayleigh_fading"] else "false",
+            "--rayleighFading": "true" if cfg.get("rayleigh_fading", False) else "false",
+            "--maxDistanceM": str(cfg.get("max_distance_m", 6.0)),
         }
     if name == "quadriga_raytraced":
         cfg = load_simple_yaml(root / "configs/channels/quadriga_raytraced.yaml")
@@ -59,15 +89,22 @@ def noise_floor_dbm(bandwidth_hz: float, noise_figure_db: float) -> float:
     return -174.0 + 10.0 * math.log10(bandwidth_hz) + noise_figure_db
 
 
-def cm8_path_loss_db(distance_m: float, root: Path) -> float:
-    cfg = load_simple_yaml(root / "configs/channels/cm8_rayleigh_20mhz.yaml")
+def log_distance_path_loss_db(channel: str, distance_m: float, root: Path) -> float:
+    """Shared log-distance + log-normal SF math used by both cm8_rayleigh and
+    inf_nlos_dl. Mirrors CalculateCm8PathLossDb() in
+    src/channel/cm8-rayleigh-channel.cc."""
+    cfg = load_simple_yaml(root / CHANNEL_YAML[channel])
     reference_distance_m = float(cfg.get("reference_distance_m", 1.0))
     d = max(distance_m, reference_distance_m)
     return (
         float(cfg["reference_loss_db"])
         + 10.0 * float(cfg["path_loss_exponent"]) * math.log10(d / reference_distance_m)
-        + float(cfg["industrial_excess_loss_db"])
+        + float(cfg.get("industrial_excess_loss_db", 0.0))
     )
+
+
+def cm8_path_loss_db(distance_m: float, root: Path) -> float:
+    return log_distance_path_loss_db("cm8_rayleigh", distance_m, root)
 
 
 def quadriga_path_loss_db(distance_m: float, root: Path) -> float:
@@ -80,8 +117,8 @@ def quadriga_path_loss_db(distance_m: float, root: Path) -> float:
 
 
 def nominal_path_loss_db(channel: str, distance_m: float, root: Path) -> float:
-    if channel == "cm8_rayleigh":
-        return cm8_path_loss_db(distance_m, root)
+    if channel in ("cm8_rayleigh", "inf_nlos_dl"):
+        return log_distance_path_loss_db(channel, distance_m, root)
     if channel == "quadriga_raytraced":
         return quadriga_path_loss_db(distance_m, root)
     raise ValueError(f"unsupported channel {channel}")
@@ -102,8 +139,16 @@ def snr_values(min_db: float | None, max_db: float | None, step_db: float | None
 
 
 def distance_values(channel: str, base: dict, root: Path, smoke: bool) -> list[float]:
-    if channel == "cm8_rayleigh":
-        distances = base["sweep"]["cm8_distance_m"]
+    if channel in ("cm8_rayleigh", "inf_nlos_dl"):
+        # `inf_nlos_dl_distance_m` is optional: when omitted we fall back to
+        # the YAML preset's `distance_m` (default reviewer subset of the
+        # 3GPP InF validity range, see configs/channels/inf_nlos_dl_5ghz.yaml).
+        if channel == "inf_nlos_dl":
+            distances = base["sweep"].get("inf_nlos_dl_distance_m") or load_simple_yaml(
+                root / CHANNEL_YAML["inf_nlos_dl"]
+            ).get("distance_m", [3, 6, 9, 12])
+        else:
+            distances = base["sweep"]["cm8_distance_m"]
         return [float(d) for d in (distances[:2] if smoke else distances)]
     trace_path = root / base["quadriga"]["trace_path"]
     distances = quadriga_distances(trace_path)
@@ -155,7 +200,12 @@ def main() -> int:
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--channel-model", action="append", default=None, help="Restrict sweep to one or more channel models; repeat for multiple models only when channel_fidelity matches")
-    parser.add_argument("--simulation-path", default="ns3_wifi_yans", choices=["ns3_wifi_yans", "ns3_core_harness"], help="Active simulator backend; ns3_core_harness is the main paper statistical campaign")
+    parser.add_argument(
+        "--simulation-path",
+        default=None,
+        choices=["ns3_wifi_yans", "ns3_core_harness"],
+        help="Active simulator backend; ns3_core_harness is the main paper statistical campaign",
+    )
     parser.add_argument("--packets-per-run", type=int, default=None)
     parser.add_argument("--snr-min", type=float, default=None)
     parser.add_argument("--snr-max", type=float, default=None)
@@ -179,6 +229,11 @@ def main() -> int:
 
     root = ROOT
     base = load_simple_yaml(root / args.config)
+    simulation_path = args.simulation_path or (base.get("simulation") or {}).get(
+        "simulation_path", "ns3_wifi_yans"
+    )
+    fairness_cfg = base.get("fairness") or {}
+    fairness_users = int(fairness_cfg.get("users", 1))
     output_dir = root / (args.output_dir or base["simulation"]["output_dir"])
     if args.smoke:
         output_dir = root / "results/smoke_sweep"
@@ -196,7 +251,29 @@ def main() -> int:
     payload_bits_values = base["sweep"]["payload_bits"]
     jammer_modes = base["sweep"]["jammer_mode"]
     jammer_powers = base["sweep"]["jammer_power_dbm"]
-    target_snrs = snr_values(args.snr_min, args.snr_max, args.snr_step)
+
+    # S9 estimator-impairment dimensions ([Fan26] §4.5 / Tab. 10 and §6.8 /
+    # Tab. 11). When the YAML omits these keys the campaign reduces to a
+    # single ideal-profile, full-policy combo, matching the historical archive
+    # behaviour bit-for-bit.
+    s9_estimator_profiles: list[str | None] = base["sweep"].get("s9_estimator_profile") or [None]
+    s9_ablation_variants_list: list[str | None] = base["sweep"].get("s9_ablation_variant") or [None]
+    s9_proactive_defer_flag = bool(base["sweep"].get("s9_proactive_defer", False))
+    for variant in s9_ablation_variants_list:
+        if variant is not None and variant not in S9_ABLATION_VARIANTS:
+            raise ValueError(
+                f"unknown s9_ablation_variant '{variant}'; "
+                f"valid choices: {sorted(S9_ABLATION_VARIANTS)}"
+            )
+    target_snrs: list[float | None]
+    if args.snr_min is not None or args.snr_max is not None or args.snr_step is not None:
+        target_snrs = snr_values(args.snr_min, args.snr_max, args.snr_step)
+    else:
+        snr_cfg = base.get("snr") or {}
+        if "target_snr_db" in snr_cfg:
+            target_snrs = [float(x) for x in snr_cfg["target_snr_db"]]
+        else:
+            target_snrs = snr_values(None, None, None)
 
     if args.smoke:
         seeds = seeds[:1]
@@ -220,8 +297,10 @@ def main() -> int:
             jammer_modes,
             jammer_powers,
             target_snrs,
+            s9_estimator_profiles,
+            s9_ablation_variants_list,
         ):
-            *_, jammer_mode, jammer_power, _target_snr = combo
+            *_, jammer_mode, jammer_power, _target_snr, _s9_prof, _s9_abl = combo
             if jammer_mode == "none" and float(jammer_power) != 0.0:
                 continue
             if jammer_mode != "none" and float(jammer_power) == 0.0:
@@ -232,7 +311,18 @@ def main() -> int:
     run_index = 0
     for channel in channels:
         chan_args = channel_args(channel, root)
-        for seed, scenario, mcs, payload_bits, distance, jammer_mode, jammer_power, target_snr in itertools.product(
+        for (
+            seed,
+            scenario,
+            mcs,
+            payload_bits,
+            distance,
+            jammer_mode,
+            jammer_power,
+            target_snr,
+            s9_profile,
+            s9_ablation,
+        ) in itertools.product(
             seeds,
             scenarios,
             mcs_values,
@@ -241,6 +331,8 @@ def main() -> int:
             jammer_modes,
             jammer_powers,
             target_snrs,
+            s9_estimator_profiles,
+            s9_ablation_variants_list,
         ):
             if jammer_mode == "none" and float(jammer_power) != 0.0:
                 continue
@@ -253,20 +345,30 @@ def main() -> int:
             if args.smoke:
                 sim_time_s = max(1.0, packets * interval_ms / 1000.0 + 0.2)
             snr_label = "configured" if target_snr is None else f"snr{target_snr:g}db"
-            run_name = f"run_{run_index:06d}_{channel}_{scenario}_mcs{mcs}_{payload_bits}b_{distance}m_{jammer_mode}_{jammer_power}dbm_{snr_label}_seed{seed}"
+            # Tag the run name with the S9 sensitivity / ablation coordinate
+            # only when those dimensions are active so the legacy archive layout
+            # is preserved when neither knob is in use.
+            s9_label_parts: list[str] = []
+            if s9_profile is not None:
+                s9_label_parts.append(f"prof{s9_profile}")
+            if s9_ablation is not None:
+                s9_label_parts.append(f"abl{s9_ablation}")
+            s9_label = ("_" + "_".join(s9_label_parts)) if s9_label_parts else ""
+            run_name = (
+                f"run_{run_index:06d}_{channel}_{scenario}_mcs{mcs}_{payload_bits}b_"
+                f"{distance}m_{jammer_mode}_{jammer_power}dbm_{snr_label}{s9_label}_seed{seed}"
+            )
             csv_path = runs_dir / f"{run_name}.csv"
             json_path = runs_dir / f"{run_name}.json"
             tx_power_dbm = None
             if target_snr is not None:
-                chan_cfg = load_simple_yaml(
-                    root / ("configs/channels/cm8_rayleigh_20mhz.yaml" if channel == "cm8_rayleigh" else "configs/channels/quadriga_raytraced.yaml")
-                )
+                chan_cfg = load_simple_yaml(root / CHANNEL_YAML[channel])
                 nf = float(chan_cfg["noise_figure_db"])
                 bw_hz = float(chan_cfg["bandwidth_hz"])
                 tx_power_dbm = target_snr + noise_floor_dbm(bw_hz, nf) + nominal_path_loss_db(channel, float(distance), root)
             cmd = [
                 str(binary),
-                f"--simulationPath={args.simulation_path}",
+                f"--simulationPath={simulation_path}",
                 f"--scenario={scenario}",
                 f"--channelModel={channel}",
                 f"--standard=80211ax",
@@ -277,6 +379,7 @@ def main() -> int:
                 f"--jammerPowerDbm={jammer_power}",
                 f"--seed={seed}",
                 f"--packets={packets}",
+                f"--users={fairness_users}",
                 f"--retryLimit={scenario_retry_limit(str(scenario))}",
                 f"--simTimeS={sim_time_s}",
                 f"--warmupS={base['simulation']['warmup_s']}",
@@ -293,6 +396,24 @@ def main() -> int:
                 cmd.append(f"--txPowerDbm={tx_power_dbm}")
             if args.require_measured_trace:
                 cmd.append("--requireMeasuredTrace=true")
+            # S9 sensitivity / ablation flag plumbing. We emit the proactive-
+            # defer flag whenever ANY of {s9_proactive_defer, s9_estimator_profile,
+            # s9_ablation_variant} is requested by the YAML, so that the new
+            # estimator behaviour actually feeds the harness logic. For pure
+            # legacy archives where none of these knobs is present in the YAML,
+            # no S9 flag is added and the binary keeps its default behaviour.
+            need_proactive = (
+                s9_proactive_defer_flag
+                or s9_profile is not None
+                or s9_ablation is not None
+            )
+            if need_proactive:
+                cmd.append("--s9-proactive-defer=true")
+            if s9_profile is not None:
+                cmd.append(f"--s9-estimator-profile={s9_profile}")
+            if s9_ablation is not None:
+                for flag, value in S9_ABLATION_VARIANTS[s9_ablation].items():
+                    cmd.append(f"--{flag}={'true' if value else 'false'}")
             print(f"[{run_index}/{total}] {' '.join(cmd)}", flush=True)
             subprocess.run(cmd, cwd=root, env=env_with_git(), check=True)
             row = read_csv_rows(csv_path)[0]

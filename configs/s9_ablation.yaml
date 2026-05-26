@@ -1,0 +1,51 @@
+# S9 component-ablation campaign (paper Tab. 11).
+#
+# Reproduces the four variants enumerated in [Fan26] §6.8:
+#   - `full`            : default S9 with the paper Algorithm 1 critical-mask
+#                         defer enabled. All checks are active.
+#   - `no_jammer_flag`  : Algorithm 1 ignores the AP-side jammer-exposure flag,
+#                         falling back to SNIR+PER margins only.
+#   - `no_cooldown`     : the 76-symbol anti-oscillation cooldown is removed,
+#                         so consecutive deferrals/retries are not decorrelated
+#                         from the previous fade.
+#   - `snir_only`       : the policy uses ONLY the gamma_hat < gamma_out check;
+#                         jammer flag and PER margin are disabled.
+#
+# All rows run with the ideal estimator profile so the ablation isolates the
+# scheduler-component effect rather than the estimator-observability effect
+# (which has its own campaign in `s9_estimator_sensitivity.yaml`).
+#
+# Aggregator: `scripts/aggregate_s9_ablation.py` collapses the per-MCS rows
+# into the markdown table that drops into the manuscript.
+
+simulation:
+  simulation_path: ns3_core_harness
+  simulation_time_s: 1.0
+  warmup_s: 0.5
+  seeds: [20260507, 20260508, 20260509]
+  output_dir: results/s9_ablation
+  packets_per_run: 10000
+  deadline_ms: 10.0
+
+sweep:
+  channel_model: [cm8_rayleigh]
+  scenario: [S9]
+  mcs: [0, 1, 3]
+  payload_bits: [128, 256, 512]
+  cm8_distance_m: [3, 6]
+  jammer_mode: [none, reactive]
+  jammer_power_dbm: [0, 10]
+  # Tab. 11 dimensions: ablation variants on the ideal estimator profile.
+  s9_ablation_variant: [full, no_jammer_flag, no_cooldown, snir_only]
+  s9_estimator_profile: [ideal]
+  s9_proactive_defer: true
+
+# Six-user fairness diagnostic: the paper's ablation table 11 reports the Jain
+# index. We compute it on the same round-robin core-harness subset used by
+# fairness_minirun.yaml so the values are directly comparable across tables.
+fairness:
+  users: 6
+  required_metrics: [per_user_pdr, jain_fairness_index]
+
+snr:
+  target_snr_db: [20]

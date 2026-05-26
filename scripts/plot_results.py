@@ -30,9 +30,11 @@ def aggregate(rows, x_key, y_key, line_keys, filters=None):
 # Lookup tables used by the legend formatter. Kept inline so a paper-prep
 # operator can tweak labels without touching the aggregation code.
 CHANNEL_LABELS = {
-    "cm8_rayleigh": "CM8 (Rayleigh/NLOS)",
-    "QD_INDUSTRIAL_NLOS_GEOMETRY_TRACE": "QuaDRiGa (NLOS trace)",
-    "quadriga_raytraced": "QuaDRiGa (NLOS trace)",
+    "cm8_rayleigh": "CM8 (Rayleigh/NLOS) [Mol09]",
+    "QD_INDUSTRIAL_NLOS_GEOMETRY_TRACE": "QuaDRiGa (NLOS trace) [Jae14]",
+    "quadriga_raytraced": "QuaDRiGa (NLOS trace) [Jae14]",
+    "inf_nlos_dl": "3GPP InF-DL NLOS [TR38.901]",
+    "TR38901_INF_NLOS_DL": "3GPP InF-DL NLOS [TR38.901]",
 }
 
 SCENARIO_LABELS = {

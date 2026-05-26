@@ -1,0 +1,49 @@
+# Diagnostic packet-level campaign for payload sensitivity and latency.
+#
+# Purpose:
+# - Re-check payload dependence with ns3_wifi_yans instead of the statistical
+#   core harness, whose PER waterfall is SNIR/MCS based.
+# - Keep all study payloads and the proposed distances:
+#   CM8: 3, 6 m; QuaDRiGa trace: 3, 6, 9, 12 m.
+# - Stress latency with a 1 ms control interval and 2 ms deadline so airtime,
+#   retry and jammer effects are visible without changing simulator code.
+#
+# This is a diagnostic/stress campaign, not a replacement for the main
+# paper_snr_sweep archive.
+
+simulation:
+  simulation_time_s: 2.5
+  warmup_s: 0.2
+  seeds: [20260507, 20260508, 20260509]
+  output_dir: results/payload_latency_yans_diagnostic
+  packets_per_run: 1000
+  interval_ms: 1.0
+  deadline_ms: 2.0
+
+sweep:
+  channel_model: [cm8_rayleigh, quadriga_raytraced]
+  scenario: [S4, S8, S9]
+  mcs: [0, 1, 3]
+  payload_bits: [128, 256, 512]
+  cm8_distance_m: [3, 6]
+  quadriga_distance_m: [3, 6, 9, 12]
+
+payload_sensitivity:
+  scenario: [S4]
+  jammer_mode: [none]
+  jammer_power_dbm: [0]
+  target_snr_db: [8, 10, 12, 14, 16, 18, 20, 22]
+
+latency_stress:
+  scenario: [S4, S8, S9]
+  jammer_mode: [none, constant, reactive]
+  jammer_power_dbm: [0, 20]
+  target_snr_db: [15]
+
+extended_payload_stress:
+  description: Diagnostic-only payload sweep to verify that the packet-level path responds to payload size when payloads are large enough to change airtime/error exposure measurably.
+  scenario: [S4]
+  payload_bits: [128, 256, 512, 2048, 4096, 12000]
+  jammer_mode: [none]
+  jammer_power_dbm: [0]
+  target_snr_db: [10, 12, 14]

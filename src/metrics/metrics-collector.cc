@@ -70,19 +70,37 @@ JsonEscape(const std::string& value)
     return out;
 }
 
+std::string
+JoinSemicolon(const std::vector<std::string>& parts)
+{
+    std::ostringstream ss;
+    for (std::size_t i = 0; i < parts.size(); ++i)
+    {
+        if (i > 0)
+        {
+            ss << ';';
+        }
+        ss << parts[i];
+    }
+    return ss.str();
+}
+
 } // namespace
 
 void
-MetricsCollector::RecordTx(uint32_t seq)
+MetricsCollector::RecordTx(uint32_t seq, uint32_t userId)
 {
     m_transmittedSeq.insert(seq);
+    ++m_txCountByUser[userId];
 }
 
 void
-MetricsCollector::RecordRx(uint32_t seq, double delayS)
+MetricsCollector::RecordRx(uint32_t seq, double delayS, uint32_t userId)
 {
     m_receivedSeq.insert(seq);
     m_receiveDelayS[seq] = delayS;
+    ++m_rxCountByUser[userId];
+    m_delaysByUser[userId].push_back(delayS);
 }
 
 RunMetrics
@@ -168,6 +186,55 @@ MetricsCollector::Compute(const RunContext& context,
             out.antiJamming.burstInducedLossRatio = 0.0;
         }
     }
+
+    const uint32_t nUsers = std::max(1u, context.numUsers);
+    const double windowS =
+        out.transmittedPackets > 0 && context.trafficIntervalS > 0.0
+            ? static_cast<double>(out.transmittedPackets) * context.trafficIntervalS
+            : 0.0;
+    std::vector<std::string> pdrParts;
+    std::vector<std::string> tputParts;
+    std::vector<std::string> p95Parts;
+    pdrParts.reserve(nUsers);
+    tputParts.reserve(nUsers);
+    p95Parts.reserve(nUsers);
+    double jainSum = 0.0;
+    double jainSumSq = 0.0;
+    for (uint32_t u = 0; u < nUsers; ++u)
+    {
+        const auto txIt = m_txCountByUser.find(u);
+        const auto rxIt = m_rxCountByUser.find(u);
+        const uint32_t txU = txIt != m_txCountByUser.end() ? txIt->second : 0u;
+        const uint32_t rxU = rxIt != m_rxCountByUser.end() ? rxIt->second : 0u;
+        const double pdrU = txU > 0 ? static_cast<double>(rxU) / static_cast<double>(txU) : 0.0;
+        pdrParts.push_back(ToString(pdrU));
+        const double tputU =
+            windowS > 0.0 ? static_cast<double>(rxU) / windowS : 0.0;
+        tputParts.push_back(ToString(tputU));
+        const auto delayIt = m_delaysByUser.find(u);
+        const double p95U = (delayIt != m_delaysByUser.end() && !delayIt->second.empty())
+                                ? Percentile(delayIt->second, 0.95)
+                                : std::numeric_limits<double>::quiet_NaN();
+        p95Parts.push_back(ToString(p95U));
+        jainSum += pdrU;
+        jainSumSq += pdrU * pdrU;
+    }
+    out.perUserPdr = JoinSemicolon(pdrParts);
+    out.perUserThroughputPps = JoinSemicolon(tputParts);
+    out.perUserP95DelayS = JoinSemicolon(p95Parts);
+    // Jain's fairness index over per-user PDR [Jai84]:
+    //   J(x_1, ..., x_n) = (sum x_i)^2 / (n * sum x_i^2)
+    // 1 = perfectly fair, 1/n = fully unfair (single user gets everything).
+    // n=1 is reported as 1.0 by convention (no multi-user contention).
+    if (nUsers > 1 && jainSumSq > 0.0)
+    {
+        out.jainFairnessIndex = (jainSum * jainSum) /
+                                (static_cast<double>(nUsers) * jainSumSq);
+    }
+    else
+    {
+        out.jainFairnessIndex = 1.0;
+    }
     return out;
 }
 
@@ -180,6 +247,7 @@ CsvHeader()
             "scenario",
             "policy",
             "policy_label",
+            "policy_paper_label",
             "simulation_path",
             "channel_model",
             "channel_fidelity",
@@ -209,9 +277,28 @@ CsvHeader()
             "eve_snir_noise_std_db",
             "eve_snir_delay_slots",
             "eve_estimation_ideal",
+            "s9_estimator_profile",
+            "s9_snir_noise_std_db",
+            "s9_snir_bias_db",
+            "s9_snir_staleness_slots",
+            "s9_jammer_missed_detection_prob",
+            "s9_jammer_false_alarm_prob",
+            "s9_per_crit",
+            "s9_gamma_out_db",
+            "s9_ablation_disable_jammer_flag",
+            "s9_ablation_disable_cooldown",
+            "s9_ablation_disable_snir_margin",
+            "s9_ablation_disable_per_margin",
+            "s9_proactive_defer_enabled",
+            "s9_proactive_defer_count",
             "trace_provenance",
             "synthetic_placeholder_final_claims_allowed",
             "fading_variance_source",
+            "num_users",
+            "per_user_pdr",
+            "per_user_throughput_pps",
+            "per_user_p95_delay_s",
+            "jain_fairness_index",
             "transmitted_packets",
             "received_packets",
             "lost_packets",
@@ -265,6 +352,7 @@ CsvRow(const RunMetrics& m)
             m.context.scenario,
             m.context.policy,
             m.context.policyLabel,
+            m.context.policyPaperLabel,
             m.context.simulationPath,
             m.context.channelModel,
             m.context.channelFidelity,
@@ -294,9 +382,28 @@ CsvRow(const RunMetrics& m)
             ToString(m.context.eveSnirNoiseStdDb),
             std::to_string(m.context.eveSnirDelaySlots),
             m.context.eveEstimationIdeal ? "true" : "false",
+            m.context.s9EstimatorProfile,
+            ToString(m.context.s9SnirNoiseStdDb),
+            ToString(m.context.s9SnirBiasDb),
+            std::to_string(m.context.s9SnirStalenessSlots),
+            ToString(m.context.s9JammerMissedDetProb),
+            ToString(m.context.s9JammerFalseAlarmProb),
+            ToString(m.context.s9PerCrit),
+            ToString(m.context.s9GammaOutDb),
+            m.context.s9AblationDisableJammerFlag ? "true" : "false",
+            m.context.s9AblationDisableCooldown ? "true" : "false",
+            m.context.s9AblationDisableSnirMargin ? "true" : "false",
+            m.context.s9AblationDisablePerMargin ? "true" : "false",
+            m.context.s9ProactiveDeferEnabled ? "true" : "false",
+            std::to_string(m.s9ProactiveDeferCount),
             m.context.traceProvenance,
             m.context.syntheticPlaceholderFinalClaimsAllowed ? "true" : "false",
             m.context.fadingVarianceSource,
+            std::to_string(m.context.numUsers),
+            m.perUserPdr,
+            m.perUserThroughputPps,
+            m.perUserP95DelayS,
+            ToString(m.jainFairnessIndex),
             std::to_string(m.transmittedPackets),
             std::to_string(m.receivedPackets),
             std::to_string(m.lostPackets),

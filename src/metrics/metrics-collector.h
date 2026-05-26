@@ -24,7 +24,12 @@ struct RunContext
     uint32_t seed{1};
     std::string scenario{"S4"};
     std::string policy{"S4"};
+    // Archive-facing legacy label (kept stable for the historical CSV
+    // archive). For the paper-facing name use `policyPaperLabel` below
+    // (CSV column `policy_paper_label`). See [Fan26] §4.1-4.3.
     std::string policyLabel{"Baseline-PF"};
+    // Paper-facing label: S4 -> Baseline-PF, S8 -> RTX-Assist, S9 -> Realloc.
+    std::string policyPaperLabel{"Baseline-PF"};
     std::string simulationPath{"ns3_wifi_yans"};
     std::string channelModel{"cm8_rayleigh"};
     std::string channelFidelity{"proxy"};
@@ -54,6 +59,32 @@ struct RunContext
     double eveSnirNoiseStdDb{0.0};
     uint32_t eveSnirDelaySlots{0};
     bool eveEstimationIdeal{true};
+
+    // S9 estimator-impairment profile and individual knobs ([Fan26] §4.5).
+    // Always exported in the CSV so that any future estimator-sensitivity
+    // campaign carries its full parameterisation per row (Data and
+    // Reproducibility Statement, [Fan26] §9).
+    std::string s9EstimatorProfile{"ideal"};
+    double s9SnirNoiseStdDb{0.0};
+    double s9SnirBiasDb{0.0};
+    uint32_t s9SnirStalenessSlots{0};
+    double s9JammerMissedDetProb{0.0};
+    double s9JammerFalseAlarmProb{0.0};
+    double s9PerCrit{0.10};
+    double s9GammaOutDb{0.0};
+
+    // S9 component-ablation switches ([Fan26] §6.8). Default all-false reproduces
+    // the historical archive.
+    bool s9AblationDisableJammerFlag{false};
+    bool s9AblationDisableCooldown{false};
+    bool s9AblationDisableSnirMargin{false};
+    bool s9AblationDisablePerMargin{false};
+
+    // Master switch for the paper Algorithm 1 critical-mask defer.
+    bool s9ProactiveDeferEnabled{false};
+
+    // Core-harness multi-user fairness: round-robin users sharing one PHY draw.
+    uint32_t numUsers{1};
 
     // Trace provenance (channel fidelity gating). Filled by the simulator for
     // every CSV row so reviewers can immediately tell whether a result row
@@ -91,13 +122,28 @@ struct RunMetrics
     double jitterS{0.0};
     SafetyMetricResult safety;
     AntiJammingMetricResult antiJamming;
+
+    // Fairness (core harness with num_users > 1): semicolon-separated lists in
+    // user-id order 0..num_users-1. For num_users == 1, lists contain a single
+    // segment mirroring the aggregate link metrics.
+    std::string perUserPdr;
+    std::string perUserThroughputPps;
+    std::string perUserP95DelayS;
+    // Jain's fairness index on per-user successful delivery rates (rx/window);
+    // 1.0 is perfectly fair.
+    double jainFairnessIndex{1.0};
+
+    // Telemetry for the paper Algorithm 1 critical-mask defer: count of
+    // proactively deferred transmission attempts (S9-only, opt-in). 0 in
+    // every legacy row.
+    uint64_t s9ProactiveDeferCount{0};
 };
 
 class MetricsCollector : public SimpleRefCount<MetricsCollector>
 {
   public:
-    void RecordTx(uint32_t seq);
-    void RecordRx(uint32_t seq, double delayS);
+    void RecordTx(uint32_t seq, uint32_t userId = 0);
+    void RecordRx(uint32_t seq, double delayS, uint32_t userId = 0);
     RunMetrics Compute(const RunContext& context,
                        double signalPowerDbm,
                        double noiseFloorDbm,
@@ -108,6 +154,9 @@ class MetricsCollector : public SimpleRefCount<MetricsCollector>
     std::set<uint32_t> m_transmittedSeq;
     std::set<uint32_t> m_receivedSeq;
     std::map<uint32_t, double> m_receiveDelayS;
+    std::map<uint32_t, uint32_t> m_txCountByUser;
+    std::map<uint32_t, uint32_t> m_rxCountByUser;
+    std::map<uint32_t, std::vector<double>> m_delaysByUser;
 };
 
 std::vector<std::string> CsvHeader();

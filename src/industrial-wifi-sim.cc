@@ -1,3 +1,9 @@
+// industrial-wifi-sim.cc -- entry point for the IEEE 802.11ax (HE) industrial
+// channel study. The validation addendum (ns3_wifi_yans simulationPath) is built
+// on top of the ns-3 Wi-Fi stack [HLR08, LH06]; the statistical main campaign
+// (ns3_core_harness simulationPath) bypasses MAC/PHY contention and consumes
+// only the propagation-loss models and RNG infrastructure of ns-3. See
+// BIBLIOGRAPHY.md for the full citation chain.
 #include "channel/channel-abstraction.h"
 #include "core-harness/core-harness.h"
 #include "jammer/constant-jammer.h"
@@ -22,6 +28,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <iostream>
 #include <random>
 #include <sstream>
@@ -91,6 +98,7 @@ main(int argc, char* argv[])
     uint32_t mcs = 0;
     uint32_t payloadBits = 128;
     uint32_t packets = 1000;
+    uint32_t users = 1;
     uint32_t retryLimit = 7;
     uint32_t s9CooldownSymbols = 76;
     bool enableNoplsBaseline = false;
@@ -109,6 +117,13 @@ main(int argc, char* argv[])
     double shadowingStdDb = 2.0;
     double coherenceTimeMs = 5.0;
     double industrialExcessLossDb = 3.0;
+    // Validity range of the loaded channel model. The C++ default mirrors the
+    // legacy cm8_rayleigh preset (6 m); for inf_nlos_dl, cm8_strict_nlos and
+    // the QuaDRiGa profile the operator (or run_sweep.py) overrides this from
+    // the YAML's `max_distance_m`. The simulator enforces `distanceM <=
+    // maxDistanceM` for stochastic models, refusing extrapolation beyond the
+    // literature's validity envelope. -1 disables the check explicitly.
+    double maxDistanceM = 6.0;
     double perThetaBpskDb = 3.0;
     double perThetaQpskDb = 6.0;
     double perTheta16QamDb = 15.5;
@@ -118,6 +133,30 @@ main(int argc, char* argv[])
     double eveSnirNoiseStdDb = 0.0;
     uint32_t eveSnirDelaySlots = 0;
     bool rayleighFading = true;
+
+    // S9 estimator-impairment profile (paper §4.5). `ideal` reproduces the
+    // historical archive bit-for-bit; the named profiles populate the
+    // individual knobs from a literature-aligned preset. Each knob can also
+    // be overridden via its own CLI flag; in that case `--s9-estimator-profile=custom`
+    // keeps the operator's overrides intact.
+    std::string s9EstimatorProfile = "ideal";
+    double s9SnirNoiseStdDb = 0.0;
+    double s9SnirBiasDb = 0.0;
+    uint32_t s9SnirStalenessSlots = 0;
+    double s9JammerMissedDetProb = 0.0;
+    double s9JammerFalseAlarmProb = 0.0;
+    double s9PerCrit = 0.10;
+    double s9GammaOutDb = 0.0;
+
+    // S9 component ablation (paper §6.8).
+    bool s9DisableJammerFlag = false;
+    bool s9DisableCooldown = false;
+    bool s9DisableSnirMargin = false;
+    bool s9DisablePerMargin = false;
+
+    // Master switch: enable the paper Algorithm 1 critical-mask defer. Default
+    // false to preserve the historical archive.
+    bool s9ProactiveDeferEnabled = false;
     // Trace provenance gate (reviewer-grade channel-fidelity guard).
     //   - `traceProvenance` is exported verbatim into the CSV. Allowed
     //     values: synthetic_placeholder, measured, cm8_stochastic_proxy.
@@ -132,7 +171,11 @@ main(int argc, char* argv[])
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("scenario", "Scenario label: S4, S8 or S9; S0 is accepted only with --enable-nopls-baseline", scenario);
-    cmd.AddValue("channelModel", "Channel model: cm8_rayleigh or quadriga_raytraced", channelModel);
+    cmd.AddValue("channelModel",
+                 "Channel model: cm8_rayleigh (CM8 industrial NLOS proxy [Mol09]), "
+                 "inf_nlos_dl (3GPP TR 38.901 InF-DL NLOS [3GPP38901]) or "
+                 "quadriga_raytraced (scalar geometry trace [Jae14])",
+                 channelModel);
     cmd.AddValue("standard", "Wi-Fi standard: 80211ax or 80211be", standard);
     cmd.AddValue("simulationPath",
                  "Simulation path: ns3_wifi_yans (packet-level addendum, YansWifiPhy stack) "
@@ -146,6 +189,10 @@ main(int argc, char* argv[])
     cmd.AddValue("jammerDistanceM", "Jammer-AP nominal distance in meters", jammerDistanceM);
     cmd.AddValue("seed", "RNG seed", seed);
     cmd.AddValue("packets", "Number of control packets to transmit", packets);
+    cmd.AddValue("users",
+                 "Core-harness only: STAs sharing the PHY in round-robin (packet seq mod users). "
+                 "Must be 1 for ns3_wifi_yans.",
+                 users);
     cmd.AddValue("retryLimit", "Wi-Fi long/short retry limit metadata", retryLimit);
     cmd.AddValue("enable-nopls-baseline", "Enable S0/NoPLS baseline policy metadata", enableNoplsBaseline);
     cmd.AddValue("per-theta-bpsk", "BPSK-1/2 PER waterfall midpoint in dB", perThetaBpskDb);
@@ -161,6 +208,50 @@ main(int argc, char* argv[])
     cmd.AddValue("eve-snir-bias-db", "Additive bias on gamma_E estimate in dB", eveSnirBiasDb);
     cmd.AddValue("eve-snir-noise-std-db", "Zero-mean Gaussian gamma_E estimate noise std in dB", eveSnirNoiseStdDb);
     cmd.AddValue("eve-snir-delay-slots", "Scheduling slots by which gamma_E estimate is stale", eveSnirDelaySlots);
+    // S9 estimator-impairment knobs (paper [Fan26] §4.5 / Tab. 10). Each
+    // defaults to 0 (= ideal observability profile, no behaviour change).
+    cmd.AddValue("s9-estimator-profile",
+                 "S9 estimator preset: ideal|moderate|conservative|custom",
+                 s9EstimatorProfile);
+    cmd.AddValue("s9-snir-noise-std-db",
+                 "Zero-mean Gaussian noise sigma on S9 AP-side SNIR estimate (dB)",
+                 s9SnirNoiseStdDb);
+    cmd.AddValue("s9-snir-bias-db",
+                 "Systematic bias on S9 AP-side SNIR estimate (dB; positive = over-estimate)",
+                 s9SnirBiasDb);
+    cmd.AddValue("s9-snir-staleness-slots",
+                 "Number of slots the S9 SNIR estimate lags the truth (0 = ideal)",
+                 s9SnirStalenessSlots);
+    cmd.AddValue("s9-jammer-md-prob",
+                 "AP-side jammer-flag missed-detection probability P_md (paper §4.5)",
+                 s9JammerMissedDetProb);
+    cmd.AddValue("s9-jammer-fa-prob",
+                 "AP-side jammer-flag false-alarm probability P_fa (paper §4.5)",
+                 s9JammerFalseAlarmProb);
+    cmd.AddValue("s9-per-crit",
+                 "PER_crit threshold above which an RU opportunity is marked critical (Eq. 4)",
+                 s9PerCrit);
+    cmd.AddValue("s9-gamma-out-db",
+                 "gamma_out threshold below which an RU is marked critical regardless of PER (Eq. 4)",
+                 s9GammaOutDb);
+    // S9 ablation switches (paper [Fan26] §6.8 / Tab. 11).
+    cmd.AddValue("s9-ablation-disable-jammer-flag",
+                 "Ablation: ignore the AP-side jammer-exposure flag in S9 critical mask",
+                 s9DisableJammerFlag);
+    cmd.AddValue("s9-ablation-disable-cooldown",
+                 "Ablation: run S9 without the 76-symbol anti-oscillation cooldown",
+                 s9DisableCooldown);
+    cmd.AddValue("s9-ablation-disable-snir-margin",
+                 "Ablation: skip the gamma_hat < gamma_out check in S9 critical mask",
+                 s9DisableSnirMargin);
+    cmd.AddValue("s9-ablation-disable-per-margin",
+                 "Ablation: skip the PER_hat > PER_crit check in S9 critical mask",
+                 s9DisablePerMargin);
+    // Master switch for the paper Algorithm 1 critical-mask defer.
+    cmd.AddValue("s9-proactive-defer",
+                 "Enable the paper Algorithm 1 critical-mask defer (opt-in; default false "
+                 "preserves the historical archive). Required to populate Tab. 10/11 campaigns.",
+                 s9ProactiveDeferEnabled);
     cmd.AddValue("txPowerDbm", "STA/AP transmit power in dBm", txPowerDbm);
     cmd.AddValue("noiseFigureDb", "Receiver noise figure in dB", noiseFigureDb);
     cmd.AddValue("bandwidthMHz", "Channel bandwidth in MHz", bandwidthMHz);
@@ -175,6 +266,11 @@ main(int argc, char* argv[])
     cmd.AddValue("coherenceTimeMs", "CM8-like fading coherence time in ms", coherenceTimeMs);
     cmd.AddValue("industrialExcessLossDb", "CM8-like industrial excess loss in dB", industrialExcessLossDb);
     cmd.AddValue("rayleighFading", "Enable CM8-like Rayleigh fading", rayleighFading);
+    cmd.AddValue("maxDistanceM",
+                 "Maximum tx-rx distance allowed for stochastic channel models "
+                 "(CM8: 10 m [Mol09]; InF-DL: 600 m [3GPP38901]). Use -1 to "
+                 "disable the validity check explicitly.",
+                 maxDistanceM);
     cmd.AddValue("traceProvenance",
                  "Trace provenance tag: synthetic_placeholder, measured or cm8_stochastic_proxy. "
                  "Leave empty to auto-detect (cm8_stochastic_proxy for CM8, synthetic_placeholder for "
@@ -219,6 +315,14 @@ main(int argc, char* argv[])
     {
         throw std::runtime_error("simulationPath must be ns3_wifi_yans or ns3_core_harness");
     }
+    if (simulationPath == "ns3_wifi_yans" && users != 1)
+    {
+        throw std::runtime_error("ns3_wifi_yans only supports users=1; use ns3_core_harness for multi-user fairness");
+    }
+    if (users < 1)
+    {
+        throw std::runtime_error("users must be >= 1");
+    }
 
     // Channel-fidelity gate (reviewer-grade). For CM8 the run is stochastic
     // proxy by construction; for QuaDRiGa we default to synthetic_placeholder
@@ -230,6 +334,12 @@ main(int argc, char* argv[])
         if (channelModel == "cm8_rayleigh")
         {
             traceProvenance = "cm8_stochastic_proxy";
+        }
+        else if (channelModel == "inf_nlos_dl")
+        {
+            // 3GPP TR 38.901 InF-DL NLOS [3GPP38901] is itself a stochastic
+            // model (path-loss formula + log-normal SF), not a measured trace.
+            traceProvenance = "tr38901_inf_stochastic";
         }
         else if (channelModel == "quadriga_raytraced")
         {
@@ -243,11 +353,12 @@ main(int argc, char* argv[])
         }
     }
     if (traceProvenance != "synthetic_placeholder" && traceProvenance != "measured" &&
-        traceProvenance != "cm8_stochastic_proxy" && traceProvenance != "unknown")
+        traceProvenance != "cm8_stochastic_proxy" &&
+        traceProvenance != "tr38901_inf_stochastic" && traceProvenance != "unknown")
     {
         throw std::runtime_error(
             "traceProvenance must be one of: synthetic_placeholder, measured, "
-            "cm8_stochastic_proxy");
+            "cm8_stochastic_proxy, tr38901_inf_stochastic");
     }
     if (channelModel == "quadriga_raytraced" && requireMeasuredTrace &&
         traceProvenance != "measured")
@@ -272,9 +383,44 @@ main(int argc, char* argv[])
     cm8.coherenceTimeMs = coherenceTimeMs;
     cm8.industrialExcessLossDb = industrialExcessLossDb;
     cm8.rayleighFading = rayleighFading;
+    // maxDistanceM < 0 -> disable the validity check (operator opt-in to
+    // extrapolate beyond the channel-model envelope; rows are still tagged
+    // with the original channel_model and can be filtered out downstream).
+    cm8.maxDistanceM = maxDistanceM < 0.0 ? std::numeric_limits<double>::infinity()
+                                          : maxDistanceM;
 
     const PerWaterfallConfig perConfig{perThetaBpskDb, perThetaQpskDb, perTheta16QamDb, perSlope, 1e-8};
     const EveEstimationConfig eveConfig{eveSnirBiasDb, eveSnirNoiseStdDb, eveSnirDelaySlots};
+
+    // S9 estimator: apply the named profile first (no-op for "custom"), then
+    // honour any individual knob overrides supplied on the command line. The
+    // knob defaults are zero (ideal) so unspecified flags do not change the
+    // preset values. To detect operator overrides we re-apply only knobs that
+    // differ from the preset's defaults: a simpler convention is to require
+    // `--s9-estimator-profile=custom` whenever per-knob overrides are mixed.
+    S9EstimatorConfig s9EstimatorCfg;
+    ApplyS9EstimatorProfile(s9EstimatorProfile, s9EstimatorCfg);
+    if (s9EstimatorProfile == "custom")
+    {
+        s9EstimatorCfg.snirNoiseStdDb = s9SnirNoiseStdDb;
+        s9EstimatorCfg.snirBiasDb = s9SnirBiasDb;
+        s9EstimatorCfg.snirStalenessSlots = s9SnirStalenessSlots;
+        s9EstimatorCfg.jammerMissedDetProb = s9JammerMissedDetProb;
+        s9EstimatorCfg.jammerFalseAlarmProb = s9JammerFalseAlarmProb;
+    }
+    // PER_crit and gamma_out apply to every profile; they tune the critical-
+    // mask thresholds rather than the estimation impairment itself.
+    s9EstimatorCfg.perCrit = s9PerCrit;
+    s9EstimatorCfg.gammaOutDb = s9GammaOutDb;
+
+    S9AblationConfig s9AblationCfg;
+    s9AblationCfg.disableJammerFlag = s9DisableJammerFlag;
+    s9AblationCfg.disableCooldown = s9DisableCooldown;
+    s9AblationCfg.disableSnirMargin = s9DisableSnirMargin;
+    s9AblationCfg.disablePerMargin = s9DisablePerMargin;
+
+    S9ProactiveDeferConfig s9ProactiveDeferCfg;
+    s9ProactiveDeferCfg.enabled = s9ProactiveDeferEnabled;
 
     auto buildRunContext = [&](const std::string& abstraction,
                                const std::string& effectiveTracePath) {
@@ -285,6 +431,7 @@ main(int argc, char* argv[])
         context.scenario = scenario;
         context.policy = scenario;
         context.policyLabel = PolicyLabel(scenario);
+        context.policyPaperLabel = PaperPolicyLabel(scenario);
         context.simulationPath = simulationPath;
         context.channelModel = ChannelDisplayName(channelModel);
         context.channelFidelity = ToString(ChannelFidelityForModel(channelModel));
@@ -316,8 +463,24 @@ main(int argc, char* argv[])
         context.eveSnirNoiseStdDb = eveSnirNoiseStdDb;
         context.eveSnirDelaySlots = eveSnirDelaySlots;
         context.eveEstimationIdeal = EveEstimationIdeal(eveConfig);
+        // S9 estimator + ablation provenance per row (Data and Reproducibility
+        // Statement, [Fan26] §9). Always exported, regardless of scenario.
+        context.s9EstimatorProfile = s9EstimatorCfg.profile;
+        context.s9SnirNoiseStdDb = s9EstimatorCfg.snirNoiseStdDb;
+        context.s9SnirBiasDb = s9EstimatorCfg.snirBiasDb;
+        context.s9SnirStalenessSlots = s9EstimatorCfg.snirStalenessSlots;
+        context.s9JammerMissedDetProb = s9EstimatorCfg.jammerMissedDetProb;
+        context.s9JammerFalseAlarmProb = s9EstimatorCfg.jammerFalseAlarmProb;
+        context.s9PerCrit = s9EstimatorCfg.perCrit;
+        context.s9GammaOutDb = s9EstimatorCfg.gammaOutDb;
+        context.s9AblationDisableJammerFlag = s9AblationCfg.disableJammerFlag;
+        context.s9AblationDisableCooldown = s9AblationCfg.disableCooldown;
+        context.s9AblationDisableSnirMargin = s9AblationCfg.disableSnirMargin;
+        context.s9AblationDisablePerMargin = s9AblationCfg.disablePerMargin;
+        context.s9ProactiveDeferEnabled = s9ProactiveDeferCfg.enabled;
         context.traceProvenance = traceProvenance;
         context.syntheticPlaceholderFinalClaimsAllowed = syntheticPlaceholderFinalClaimsAllowed;
+        context.numUsers = users;
         // Fading-variance source: drives reviewer-readable channel-fidelity
         // semantics. The harness path knows the actual source from its own
         // dispatch (trace-derived vs CM8 proxy vs deterministic) and overrides
@@ -325,6 +488,14 @@ main(int argc, char* argv[])
         if (channelModel == "cm8_rayleigh")
         {
             context.fadingVarianceSource = rayleighFading ? "cm8_proxy" : "none";
+        }
+        else if (channelModel == "inf_nlos_dl")
+        {
+            // 3GPP InF-DL stochastic SF; the YAML default is log-normal only,
+            // but the operator can still toggle on the Rayleigh draw to obtain
+            // a coarser proxy. Surface the actual choice in the CSV so the
+            // channel-fidelity story is self-documenting.
+            context.fadingVarianceSource = rayleighFading ? "cm8_proxy" : "log_normal_only";
         }
         else if (channelModel == "quadriga_raytraced")
         {
@@ -364,6 +535,10 @@ main(int argc, char* argv[])
         harness.s8RtxSnirGainDb = s8RtxSnirGain;
         harness.s9CooldownSymbols = s9CooldownSymbols;
         harness.seed = seed;
+        harness.users = users;
+        harness.s9Estimator = s9EstimatorCfg;
+        harness.s9Ablation = s9AblationCfg;
+        harness.s9ProactiveDefer = s9ProactiveDeferCfg;
 
         Ptr<MetricsCollector> collector = Create<MetricsCollector>();
         const CoreHarnessLinkBudget budget = RunCoreHarness(harness, *collector);
@@ -378,6 +553,7 @@ main(int argc, char* argv[])
                                                 budget.noiseFloorDbm,
                                                 budget.jammerPowerAtReceiverDbm,
                                                 budget.telemetry);
+        metrics.s9ProactiveDeferCount = budget.s9ProactiveDeferCount;
         WriteCsv(output, metrics);
         WriteJson(jsonOutput, metrics);
         Simulator::Destroy();
@@ -557,9 +733,10 @@ main(int argc, char* argv[])
 
     const double signalPowerDbm = NominalRxPowerDbm(txPowerDbm, channelSummary.nominalPathLossDb);
     const double noiseFloorDbm = CalculateNoiseFloorDbm(bandwidthMHz * 1e6, noiseFigureDb);
-    const double jammerPathLossDb = channelModel == "cm8_rayleigh"
-                                        ? CalculateCm8PathLossDb(jammerDistanceM, cm8)
-                                        : channelSummary.nominalPathLossDb;
+    const double jammerPathLossDb =
+        (channelModel == "cm8_rayleigh" || channelModel == "inf_nlos_dl")
+            ? CalculateCm8PathLossDb(jammerDistanceM, cm8)
+            : channelSummary.nominalPathLossDb;
     const double jammerRxDbm = jammerEnabled ? jammerPowerDbm - jammerPathLossDb : -300.0;
 
     RunMetrics metrics = collector->Compute(context, signalPowerDbm, noiseFloorDbm, jammerRxDbm);

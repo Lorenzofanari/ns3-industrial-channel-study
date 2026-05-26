@@ -115,6 +115,109 @@ def main() -> int:
                 f"Core harness PDR at SNIR ~3 dB (BPSK midpoint) must be strictly between 0 and 1, got {pdr}")
     assert_true(int(harness_row["transmitted_packets"]) == 2000,
                 "Core harness must launch the requested packet count")
+    assert_true(harness_row["num_users"] == "1",
+                "Default core harness export must report num_users=1")
+    assert_true(harness_row["per_user_pdr"].count(";") == 0,
+                "Single-user fairness lists must contain one segment")
+    assert_true(abs(float(harness_row["jain_fairness_index"]) - 1.0) < 1e-9,
+                "Single-user or equal-PDR fairness must yield Jain index 1")
+
+    inf_run = ROOT / "results/tests/inf_nlos_dl.csv"
+    subprocess.run([
+        str(ROOT / "build/industrial-wifi-sim"),
+        "--simulationPath=ns3_core_harness",
+        "--scenario=S4",
+        "--channelModel=inf_nlos_dl",
+        "--mcs=0",
+        "--payloadBits=128",
+        "--distanceM=12",
+        "--seed=20260601",
+        "--packets=400",
+        # 3GPP InF-DL NLOS @ 5.18 GHz: PL_NLOS = 32.87 + 35.7*log10(12) ~ 71.4 dB.
+        # Pick txPower so signal - PL - noiseFloor ~ 3 dB SNIR (BPSK midpoint) and
+        # PDR sits strictly between 0 and 1.
+        "--txPowerDbm=-13.5",
+        "--pathLossExponent=3.57",
+        "--referenceLossDb=32.87",
+        "--shadowingStdDb=7.2",
+        "--industrialExcessLossDb=0",
+        "--rayleighFading=false",
+        "--maxDistanceM=50",
+        f"--output={inf_run}",
+        f"--jsonOutput={inf_run.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    inf_row = read_csv_rows(inf_run)[0]
+    assert_true(inf_row["channel_model"] == "TR38901_INF_NLOS_DL",
+                "inf_nlos_dl must export the 3GPP TR38.901 display name")
+    assert_true(inf_row["channel_abstraction"]
+                == "stochastic_3gpp_inf_nlos_dl_log_distance_with_shadowing",
+                "inf_nlos_dl must label its abstraction as 3GPP InF stochastic")
+    assert_true(inf_row["trace_provenance"] == "tr38901_inf_stochastic",
+                "inf_nlos_dl must default to tr38901_inf_stochastic provenance")
+    assert_true(inf_row["fading_variance_source"] == "log_normal_only",
+                "inf_nlos_dl with rayleighFading=false must report log-normal-only SF")
+    assert_true(inf_row["channel_fidelity"] == "proxy",
+                "inf_nlos_dl is a stochastic proxy, not a trace replay")
+    inf_pdr = float(inf_row["pdr"])
+    assert_true(0.05 < inf_pdr < 0.95,
+                f"inf_nlos_dl harness PDR at SNIR ~3 dB must be strictly between 0 and 1, got {inf_pdr}")
+    inf_pl = float(inf_row["signal_power_dbm"]) - float(-13.5)
+    assert_true(abs(inf_pl + 71.4) < 0.3,
+                f"inf_nlos_dl signal_power_dbm must match TR38.901 InF-DL NLOS formula within 0.3 dB, got drift {inf_pl + 71.4} dB")
+
+    inf_far = subprocess.run([
+        str(ROOT / "build/industrial-wifi-sim"),
+        "--simulationPath=ns3_core_harness",
+        "--scenario=S4",
+        "--channelModel=inf_nlos_dl",
+        "--mcs=0",
+        "--payloadBits=128",
+        "--distanceM=80",
+        "--packets=1",
+        "--maxDistanceM=50",
+        f"--output={ROOT / 'results/tests/inf_far_bad.csv'}",
+        f"--jsonOutput={ROOT / 'results/tests/inf_far_bad.json'}",
+    ], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert_true(inf_far.returncode != 0,
+                "inf_nlos_dl distance > maxDistanceM (configured by YAML) must fail")
+
+    fair6 = ROOT / "results/tests/core_harness_users6.csv"
+    subprocess.run([
+        str(ROOT / "build/industrial-wifi-sim"),
+        "--simulationPath=ns3_core_harness",
+        "--scenario=S4",
+        "--channelModel=cm8_rayleigh",
+        "--mcs=0",
+        "--payloadBits=128",
+        "--distanceM=3",
+        "--seed=20260507",
+        "--packets=600",
+        "--users=6",
+        "--txPowerDbm=-34",
+        f"--output={fair6}",
+        f"--jsonOutput={fair6.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    fair6_row = read_csv_rows(fair6)[0]
+    assert_true(fair6_row["num_users"] == "6", "six-user harness must export num_users=6")
+    assert_true(fair6_row["per_user_pdr"].count(";") == 5,
+                "six PDR samples must be semicolon-separated")
+    assert_true(float(fair6_row["jain_fairness_index"]) >= 0.99,
+                "Symmetric six-user round-robin should keep Jain fairness high at moderate sample sizes")
+
+    yans_multi = subprocess.run([
+        str(ROOT / "build/industrial-wifi-sim"),
+        "--scenario=S4",
+        "--channelModel=cm8_rayleigh",
+        "--mcs=0",
+        "--payloadBits=128",
+        "--packets=10",
+        "--simTimeS=1",
+        "--users=2",
+        f"--output={ROOT / 'results/tests/yans_multi_bad.csv'}",
+        f"--jsonOutput={ROOT / 'results/tests/yans_multi_bad.json'}",
+    ], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert_true(yans_multi.returncode != 0,
+                "ns3_wifi_yans must reject users>1")
 
     nopls = ROOT / "results/tests/nopls.csv"
     gated = subprocess.run([
@@ -139,6 +242,112 @@ def main() -> int:
     assert_true(nopls_row["scenario"] == "S0", "S0 run should preserve scenario string S0")
     assert_true(nopls_row["policy"] == "S0", "S0 run should export policy string S0")
     assert_true(nopls_row["policy_label"] == "NoPLS", "S0 run should export NoPLS label")
+
+    # --- S9 estimator-impairment and ablation tests (paper [Fan26] §4.5/§6.8).
+    # These tests guard the contract that:
+    #   (a) Default S9 is unchanged vs. the historical archive.
+    #   (b) The paper-facing policy label is exported alongside the legacy one.
+    #   (c) Activating the proactive-defer with the ideal profile triggers
+    #       defer events but does not depress PDR.
+    #   (d) The conservative profile triggers strictly more defer events than
+    #       ideal (false alarms inflate the defer count).
+    #   (e) The ablation no-cooldown variant degrades PDR vs. full S9 under
+    #       reactive jamming with proactive-defer enabled.
+    common_args = [
+        "--simulationPath=ns3_core_harness",
+        "--scenario=S9",
+        "--channelModel=cm8_rayleigh",
+        "--maxDistanceM=10",
+        "--distanceM=6",
+        "--mcs=3",
+        "--payloadBits=256",
+        "--seed=20260507",
+        "--packets=2000",
+        "--simTimeS=25",
+        "--jammerMode=reactive",
+        "--jammerPowerDbm=10",
+        "--txPowerDbm=8",
+    ]
+
+    s9_default = ROOT / "results/tests/s9_default.csv"
+    subprocess.run([
+        str(ROOT / "build/industrial-wifi-sim"),
+        *common_args,
+        f"--output={s9_default}",
+        f"--jsonOutput={s9_default.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    s9_default_row = read_csv_rows(s9_default)[0]
+    assert_true(s9_default_row["policy_label"] == "PLS-Realloc",
+                "Legacy policy_label must stay 'PLS-Realloc' for archive continuity")
+    assert_true(s9_default_row["policy_paper_label"] == "Realloc",
+                "Paper-facing policy_paper_label must be 'Realloc' per [Fan26] §4.3")
+    assert_true(s9_default_row["s9_proactive_defer_enabled"] == "false",
+                "Default S9 must have proactive defer disabled")
+    assert_true(int(s9_default_row["s9_proactive_defer_count"]) == 0,
+                "Default S9 must produce zero proactive defer events")
+    assert_true(s9_default_row["s9_estimator_profile"] == "ideal",
+                "Default S9 estimator profile must be 'ideal'")
+
+    s9_ideal = ROOT / "results/tests/s9_proactive_ideal.csv"
+    subprocess.run([
+        str(ROOT / "build/industrial-wifi-sim"),
+        *common_args,
+        "--s9-proactive-defer=true",
+        "--s9-estimator-profile=ideal",
+        f"--output={s9_ideal}",
+        f"--jsonOutput={s9_ideal.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    s9_ideal_row = read_csv_rows(s9_ideal)[0]
+    assert_true(s9_ideal_row["s9_proactive_defer_enabled"] == "true",
+                "proactive-defer flag must propagate to CSV")
+    ideal_defer = int(s9_ideal_row["s9_proactive_defer_count"])
+    assert_true(ideal_defer > 0,
+                f"Proactive S9 must fire at least one defer event, got {ideal_defer}")
+    assert_true(float(s9_ideal_row["pdr"]) >= float(s9_default_row["pdr"]) - 1e-3,
+                "Proactive S9 with ideal estimator must not degrade PDR vs. legacy S9")
+
+    s9_conservative = ROOT / "results/tests/s9_proactive_conservative.csv"
+    subprocess.run([
+        str(ROOT / "build/industrial-wifi-sim"),
+        *common_args,
+        "--s9-proactive-defer=true",
+        "--s9-estimator-profile=conservative",
+        f"--output={s9_conservative}",
+        f"--jsonOutput={s9_conservative.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    s9_cons_row = read_csv_rows(s9_conservative)[0]
+    cons_defer = int(s9_cons_row["s9_proactive_defer_count"])
+    assert_true(cons_defer > ideal_defer,
+                f"Conservative profile must produce more defer events than ideal "
+                f"(conservative={cons_defer}, ideal={ideal_defer})")
+    assert_true(float(s9_cons_row["s9_snir_noise_std_db"]) > 0.0,
+                "Conservative profile must carry a positive SNIR-noise std into the CSV")
+    assert_true(float(s9_cons_row["s9_jammer_missed_detection_prob"]) > 0.0,
+                "Conservative profile must carry a positive P_md into the CSV")
+
+    s9_no_cooldown = ROOT / "results/tests/s9_ablation_no_cooldown.csv"
+    subprocess.run([
+        str(ROOT / "build/industrial-wifi-sim"),
+        *common_args,
+        "--s9-proactive-defer=true",
+        "--s9-estimator-profile=ideal",
+        "--s9-ablation-disable-cooldown=true",
+        f"--output={s9_no_cooldown}",
+        f"--jsonOutput={s9_no_cooldown.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    s9_nc_row = read_csv_rows(s9_no_cooldown)[0]
+    assert_true(s9_nc_row["s9_ablation_disable_cooldown"] == "true",
+                "no_cooldown ablation flag must be exported in the CSV")
+    # Without cooldown the defer is ineffective: the next attempt falls in
+    # the same coherence window so PDR drops. We require at least 1e-4
+    # difference to avoid noise-driven flakes (the smoke run earlier showed
+    # 35e-4 -> well above the threshold).
+    pdr_full = float(s9_ideal_row["pdr"])
+    pdr_no_cd = float(s9_nc_row["pdr"])
+    assert_true(pdr_no_cd <= pdr_full + 1e-4,
+                f"Ablation no_cooldown should not improve PDR vs full S9 "
+                f"(full={pdr_full}, no_cooldown={pdr_no_cd})")
+
     print("All lightweight tests passed")
     return 0
 

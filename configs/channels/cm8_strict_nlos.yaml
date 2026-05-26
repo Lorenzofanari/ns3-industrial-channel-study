@@ -1,0 +1,25 @@
+name: cm8_rayleigh
+description: >-
+  IEEE 802.15.4a CM8 industrial NLOS, calibrated strictly to the
+  Molisch et al. 2009 TG report (n=2.15, sigma_S=6 dB, PL0=56.7 dB,
+  validity up to 10 m). The shipped cm8_rayleigh_20mhz.yaml is a lighter
+  engineering proxy; this file lets reviewers replay the campaign with
+  the literature-faithful parameters. Citation: [Mol09], [Mol04] in
+  BIBLIOGRAPHY.md / paper.bib.
+carrier_frequency_hz: 5.18e9
+bandwidth_hz: 20e6
+max_distance_m: 10                # CM8 NLOS PL validity per Molisch et al.
+distance_m: [1, 2, 3, 4, 6, 8, 10]
+tx_power_dbm: 18
+noise_figure_db: 7
+path_loss_exponent: 2.15          # Molisch et al. 2009, Table IV (industrial NLOS)
+reference_loss_db: 56.7           # Molisch et al. 2009, PL0 at d0 = 1 m
+reference_distance_m: 1.0
+shadowing_std_db: 6.0             # Molisch et al. 2009, sigma_S = 6 dB
+rayleigh_fading: true             # Mod-Saleh-Valenzuela small-scale fading
+coherence_time_ms: 5
+industrial_excess_loss_db: 0.0    # PL0 already includes the industrial floor;
+                                  # no extra excess.
+receiver_sensitivity_dbm: -95
+packet_detection_threshold_dbm: -90
+snr_to_per: ns3_error_model

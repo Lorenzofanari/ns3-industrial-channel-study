@@ -10,6 +10,26 @@ namespace ns3
 namespace industrial
 {
 
+// References (see BIBLIOGRAPHY.md / paper.bib for the full entries):
+//   [Mol09] Molisch et al., "A Comprehensive Standardized Model for UWB
+//           Propagation Channels", IEEE TAP 57(11):3151-3166, 2009.
+//   [Mol04] Molisch et al., IEEE 802.15-04/0662-04-004a "Channel Model Final
+//           Report", 2004. CM8 = industrial NLOS, n=2.15, sigma_S=6 dB,
+//           PL0=56.7 dB at d0=1 m, validity 1-10 m.
+//   [Tan08] Tanghe et al., "The industrial indoor channel at 900, 2400 and
+//           5200 MHz", IEEE TWC 7(7):2740-2751, 2008. Source for the
+//           one-slope + log-normal SF model used at 5.18 GHz.
+//   [3GPP38901] 3GPP TR 38.901 §7.4.1 Indoor Factory NLOS. Modern alternative
+//           to CM8; this same C++ engine drives `inf_nlos_dl` via the
+//           InF-DL parameter set documented in
+//           configs/channels/inf_nlos_dl_5ghz.yaml.
+//
+// The struct below is a generic *log-distance + log-normal shadowing + optional
+// Rayleigh* configuration. Calling it "Cm8RayleighConfig" is a historical name;
+// at 5.18 GHz with the InF-DL parameter set this same engine implements the
+// 3GPP InF NLOS model exactly. See `inf_nlos_dl_5ghz.yaml` and `cm8_strict_nlos.yaml`
+// for two literature-faithful presets, and `cm8_rayleigh_20mhz.yaml` for the
+// lighter engineering proxy shipped historically with this repository.
 struct Cm8RayleighConfig
 {
     double carrierFrequencyHz{5.18e9};

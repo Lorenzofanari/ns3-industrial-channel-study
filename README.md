@@ -3,11 +3,70 @@
 Standalone ns-3 project for industrial wireless channel evaluation with
 IEEE 802.11ax / 802.11be-like PHY configurations.
 
-The study compares secrecy-aware scheduling labels `S4`, `S8`, and `S9` while
-keeping simulation fidelity metadata explicit in every CSV row.  Results are
-never smoothed, deleted, or post-processed to force a desired trend.  If PLR/PER
-do not improve under physically better conditions, inspect the channel, PHY,
-MAC, traffic, and metric extraction path.
+The study evaluates three OFDMA-like scheduler policies under industrial
+NLOS channel proxies and reactive jamming:
+
+- **S4 / Baseline-PF** -- proportional-fair reference;
+- **S8 / RTX-Assist** -- conservative retransmission-assisted scheduler
+  (legacy CSV label `PLS-RTX`);
+- **S9 / Realloc** -- AP-side SNIR-estimate-driven RU reallocation with a
+  76-symbol anti-oscillation cooldown (legacy CSV label `PLS-Realloc`).
+
+The simulator is the ns-3 scheduler-harness implementation that backs the
+manuscript [Fan26] -- *"Resilient OFDMA Scheduling under Reactive Jamming in
+Industrial IEEE 802.11ax-like Networks: An ns-3 Scheduler-Harness Study"*.
+The paper validates **reliability and resilience metrics** (PDR, PLR/PER,
+p95 delay, recovery time, deadline miss, jammer-ON/OFF behaviour, Jain
+fairness); it does not export information-theoretic secrecy capacity. The
+`PLS-*` labels in the CSV archive are retained for historical continuity and
+do not imply secrecy claims; the paper-facing names live in
+`policy_paper_label`. See [BIBLIOGRAPHY.md](BIBLIOGRAPHY.md) for the full
+citation map.
+
+Results are never smoothed, deleted, or post-processed to force a desired
+trend. If PLR/PER do not improve under physically better conditions, inspect
+the channel, PHY, MAC, traffic, and metric extraction path.
+
+## Project Attribution
+
+This work was developed as a collaboration between EUNEIZ and the University of
+Cagliari.
+
+Supervisor: Lorenzo Fanari, lorenzo.fanari@euneiz.com
+
+## Bibliography & Citing
+
+Every calibration constant in the codebase points back to a literature source.
+The full citation chain lives in [`BIBLIOGRAPHY.md`](BIBLIOGRAPHY.md) (human
+readable, with a "where it lands in the source tree" table) and in
+[`paper.bib`](paper.bib) (BibTeX, ready to be imported into an
+IEEE / Elsevier manuscript). Key references:
+
+- **CM8 industrial NLOS**: Molisch et al., *IEEE TAP* 2009 [Mol09] +
+  IEEE 802.15-04/0662 [Mol04].
+- **3GPP Indoor Factory NLOS** (new `inf_nlos_dl` channel): 3GPP TR 38.901
+  §7.4.1 [3GPP38901].
+- **5 GHz industrial channel empirical fit**: Tanghe et al., *IEEE TWC* 2008
+  [Tan08]; Trassl et al., *PIMRC* 2018 [Tra18].
+- **QuaDRiGa**: Jaeckel et al., *IEEE TAP* 2014 [Jae14].
+- **IEEE 802.11ax PHY / HE-MCS rates**: Khorov et al., *IEEE COMST* 2019
+  [Kho19].
+- **PER waterfall sigmoid calibration**: TGax evaluation methodology
+  [TGax571] + RBIR PHY abstraction [Iyy22].
+- **Reactive jamming on 802.11**: Bayraktaroglu et al., *INFOCOM* 2008
+  [Bay08] / *MONET* 2013 [Bay13]; Pelechrinis et al., *IEEE COMST* 2011
+  [Pel11]; Pirayesh & Zeng, *IEEE COMST* 2022 [Gri21].
+- **PLS / secure HARQ** (S8 PLS-RTX, S9 PLS-Realloc): Bloch & Barros,
+  Cambridge 2011 [Blo11] + Bloch et al., *IEEE TIT* 2008 [Blo08]; Tang, Liu,
+  Spasojevic, Poor, *IEEE TIT* 2009 [Tan09].
+- **Jain's fairness index**: Jain, Chiu, Hawe, DEC-TR-301 1984 [Jai84].
+- **ns-3 simulator**: Henderson, Lacage, Riley, *SIGCOMM* 2008 [HLR08];
+  Lacage & Henderson, *WNS2* 2006 [LH06].
+- **Industrial cyber-physical control deadline targets**: 3GPP TS 22.104
+  [TS22104], IEEE 802.1Qbv [IEEE802Qbv], IEEE 802.1CB [IEEE802CB].
+
+Search the codebase for the bracketed reference key (e.g. `[Mol09]`,
+`[Bay08]`, `[Jai84]`) to locate every place where each citation is used.
 
 ## Fidelity Matrix
 
@@ -24,15 +83,95 @@ values.
 
 ## Channels
 
-- `cm8_rayleigh`: CM8-like industrial Rayleigh/NLOS proxy abstraction at
-  20 MHz, limited to 1-6 m.
-- `quadriga_raytraced`: scalar geometry/path-loss trace replay through the
-  Yans path.  CSV rows label this as
-  `QD_INDUSTRIAL_NLOS_GEOMETRY_TRACE`.
+Three channel models are supported. Each one comes with a documented
+calibration source in [`BIBLIOGRAPHY.md`](BIBLIOGRAPHY.md) /
+[`paper.bib`](paper.bib); see also the inline comments in
+`src/channel/cm8-rayleigh-channel.cc` and
+`src/channel/channel-abstraction.cc`.
+
+- `cm8_rayleigh` -- log-distance + log-normal SF + optional Rayleigh, labelled
+  after IEEE 802.15.4a CM8 "Industrial NLOS" [Mol09, Mol04]. The default YAML
+  preset (`configs/channels/cm8_rayleigh_20mhz.yaml`) is an **engineering
+  proxy** (`n=2.2, sigma_S=2 dB, PL_0=43 dB, max_distance=6 m`), not a strict
+  CM8 replica. To reproduce results with the literature-faithful CM8 NLOS
+  parameters use `configs/channels/cm8_strict_nlos.yaml` (`n=2.15, sigma_S=6
+  dB, PL_0=56.7 dB, validity 1-10 m`) or pass the corresponding `--*`
+  overrides on the CLI.
+- `inf_nlos_dl` -- **3GPP TR 38.901 §7.4.1 Indoor Factory NLOS, Dense Clutter,
+  Low BS** [3GPP38901]. The same C++ engine as `cm8_rayleigh` is reused with
+  the InF-DL parameter set:
+  `PL_NLOS(d, fc) = 18.6 + 35.7*log10(d) + 20*log10(fc[GHz])`, sigma_SF = 7.2
+  dB, 1 m <= d <= 600 m. Preset:
+  `configs/channels/inf_nlos_dl_5ghz.yaml`. CSV rows are labelled
+  `channel_model=TR38901_INF_NLOS_DL`,
+  `channel_abstraction=stochastic_3gpp_inf_nlos_dl_log_distance_with_shadowing`,
+  `trace_provenance=tr38901_inf_stochastic`.
+- `quadriga_raytraced` -- scalar geometry/path-loss trace replay through the
+  Yans path [Jae14]. CSV rows label this as
+  `QD_INDUSTRIAL_NLOS_GEOMETRY_TRACE`. The shipped placeholder trace is
+  synthetic; see the **Paper Use of QuaDRiGa** section.
 
 For core-harness archives, `QD_INDUSTRIAL_NLOS_PROXY` means proxy
 parameterization inspired by QuaDRiGa industrial NLOS behavior, not full
 QuaDRiGa geometry trace replay.
+
+A reviewer can swap the active channel model on a single run with
+`--channelModel=cm8_rayleigh | inf_nlos_dl | quadriga_raytraced`, and the
+factorial sweep in `scripts/run_sweep.py` (see `--channel-model`) accepts the
+same values. The companion file `BIBLIOGRAPHY.md` lists every paper that
+backs the calibration constants used by each model.
+
+## Paper Use of QuaDRiGa
+
+QuaDRiGa is usable for papers as a channel-trace source when the trace is a real
+external dataset or a documented QuaDRiGa generation campaign with reproducible
+layout, carrier, bandwidth, antenna, mobility, industrial scenario, seed and
+export settings.  In that case, the simulator should be run with the measured
+trace gate enabled and every CSV row should carry `trace_provenance=measured`.
+
+The traces currently shipped in this repository are not publishable as final
+scientific evidence.  `data/quadriga/example_trace.csv` is a synthetic
+placeholder that exists to exercise the importer and the reproducibility
+pipeline.  Rows generated from it are exported with
+`trace_provenance=synthetic_placeholder` and
+`synthetic_placeholder_final_claims_allowed=false`; they may support a simulator
+proposal, workflow validation, figure-layout testing and reviewer-visible
+metadata checks, but they must not support final quantitative channel claims.
+
+Recommended publication stance:
+
+- publishable now: the simulator architecture, reproducibility metadata,
+  anti-jamming telemetry, trend checks, seed audit, plotting pipeline and the
+  documented distinction between proxy, packet-level and trace-replay paths;
+- publishable as proxy evidence only: CM8 and core-harness policy-ranking
+  results, provided the text states that they are statistical/proxy simulations;
+- not publishable as final QuaDRiGa performance evidence yet: numerical claims
+  from the included synthetic QuaDRiGa placeholder;
+- publishable after trace replacement: QuaDRiGa results regenerated with real
+  measured/external traces and `--requireMeasuredTrace=true`.
+
+## Simulator Proposal
+
+This project proposes a reproducible two-level ns-3 workflow for industrial
+anti-jamming evaluation:
+
+1. `ns3_core_harness` performs broad Monte-Carlo sweeps over policy, MCS,
+   payload, distance, jammer mode and SNIR.  It is intended for rapid
+   policy-ranking studies and exports explicit proxy/fidelity metadata.
+2. `ns3_wifi_yans` provides a packet-level validation addendum for payload,
+   latency, retry and deadline behavior.  It is not silently merged with the
+   core harness because its PER definition and PHY/MAC path differ.
+3. `quadriga_raytraced` is treated as external trace replay.  The repository
+   includes only a synthetic placeholder trace; the camera-ready scientific
+   pipeline must replace it with a measured or reproducibly generated external
+   QuaDRiGa trace.
+4. Every result row preserves reproducibility metadata: seed, ns-3 version, git
+   hash when available, scenario, channel, PHY/MAC path, payload, distance,
+   jammer configuration and simulation time.
+
+The intended contribution is therefore not "synthetic QuaDRiGa results", but a
+guarded simulator pipeline that prevents placeholder traces from being mistaken
+for measured scientific evidence.
 
 ## Policies
 
@@ -173,6 +312,92 @@ Validation addendum:
 - purpose: packet-level contention/BlockAck validation for a subset of
   configurations
 - output must remain separate from the main paper archive
+
+## Minimal Fairness Mini-Run
+
+Do not rerun the full `paper_v2` campaign for the fairness addendum.  Use a
+compact, representative CM8-only matrix:
+
+| parameter | values |
+|---|---|
+| channel | `cm8_rayleigh` |
+| distance | `3 m`, `6 m` |
+| target SNIR | `12`, `16`, `20 dB` |
+| MCS | `0`, `1`, `3` |
+| jammer | `none`, `reactive` |
+| payload | `256 bit` |
+| seed | `20260507`, `20260508`, `20260509` |
+| policies | `S4`, `S8`, `S9` |
+| users | `6` |
+
+This is a `2 x 3 x 3 x 2 x 1 x 3 x 3 = 324` point matrix before any
+per-user expansion.  The parameter file is
+`configs/fairness_minirun.yaml`.
+
+The simulator CLI now exposes `--users` (core-harness only): packets are
+assigned to STAs in strict round-robin with `userId = seq mod users`. Every
+result row carries the fairness columns `num_users`, `per_user_pdr`,
+`per_user_throughput_pps`, `per_user_p95_delay_s` and `jain_fairness_index`
+(Jain on per-user PDR; segments are semicolon-separated in user-id order and
+use the literal token `nan` for users that received zero packets).
+
+Run the mini-run with the values driven entirely by the YAML
+(`fairness.users`, `snr.target_snr_db`, and `simulation.simulation_path`):
+
+```bash
+python3 scripts/run_sweep.py --config configs/fairness_minirun.yaml --no-build
+```
+
+Output lives under `results/fairness_minirun/` together with a generated
+`README.md` describing the per-user CSV schema.
+
+## S9 Estimator Sensitivity and Ablation (paper [Fan26] Tab. 10 and Tab. 11)
+
+The paper's [Fan26] §4.5 and §6.7-6.8 introduce two S9-specific campaigns
+that are **not** part of the historical archive:
+
+- **Tab. 10 -- Estimator-impairment sensitivity.** Three estimator profiles
+  (`ideal`, `moderate`, `conservative`) modulate the AP-side SNIR estimate
+  feeding the Algorithm 1 critical-mask defer. Profiles map to Gaussian SNIR
+  noise sigma, staleness in slots, missed-detection probability `P_md` and
+  false-alarm probability `P_fa` (paper Eq. 6). The defer mechanism itself is
+  unchanged; only the *information* feeding the decision is degraded.
+- **Tab. 11 -- Component ablation.** Four variants (`full`, `no_jammer_flag`,
+  `no_cooldown`, `snir_only`) toggle individual checks of Algorithm 1 so the
+  contribution of each component (jammer indicator, anti-oscillation cooldown,
+  SNIR margin, PER margin) can be attributed.
+
+Both campaigns are gated by the new opt-in switch `--s9-proactive-defer=true`.
+Default behaviour is unchanged: the legacy CSV archive remains bit-identical
+to the runs the paper §6.2-6.6 figures use.
+
+Run the two campaigns and produce the publication-ready markdown tables:
+
+```bash
+# Tab. 10 (estimator sensitivity)
+python3 scripts/run_sweep.py --config configs/s9_estimator_sensitivity.yaml
+python3 scripts/aggregate_s9_sensitivity.py
+# -> results/s9_estimator_sensitivity/tab10_sensitivity.md
+
+# Tab. 11 (component ablation)
+python3 scripts/run_sweep.py --config configs/s9_ablation.yaml
+python3 scripts/aggregate_s9_ablation.py
+# -> results/s9_ablation/tab11_ablation.md
+```
+
+Every row of both campaigns carries the full S9 parameter set as CSV columns
+(`s9_estimator_profile`, `s9_snir_noise_std_db`, `s9_snir_bias_db`,
+`s9_snir_staleness_slots`, `s9_jammer_missed_detection_prob`,
+`s9_jammer_false_alarm_prob`, `s9_per_crit`, `s9_gamma_out_db`, four
+`s9_ablation_disable_*` flags, `s9_proactive_defer_enabled`, and the
+telemetry counter `s9_proactive_defer_count`). This implements the Data and
+Reproducibility Statement of [Fan26] §9: any reviewer can rerun a row from
+its CSV metadata alone.
+
+The paper also uses paper-aligned policy names (`Baseline-PF`, `RTX-Assist`,
+`Realloc`) which now appear as the dedicated CSV column `policy_paper_label`,
+side by side with the legacy `policy_label` (`Baseline-PF`, `PLS-RTX`,
+`PLS-Realloc`) that keeps the historical archive valid.
 
 ## Journal-Grade Anti-Jamming Telemetry
 

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -18,7 +19,8 @@ double
 HeDataRateMbps(uint32_t mcs)
 {
     // IEEE 802.11ax 20 MHz, 1 spatial stream, GI = 3.2 us (data subcarriers = 234,
-    // useful symbol duration 12.8 us + 3.2 us GI = 16 us).
+    // useful symbol duration 12.8 us + 3.2 us GI = 16 us). Values reproduced
+    // from the HE-MCS rate table in [Kho19] §III (see BIBLIOGRAPHY.md).
     switch (mcs)
     {
     case 0:
@@ -34,6 +36,14 @@ HeDataRateMbps(uint32_t mcs)
 double
 CalculatePerSigmoid(double snirDb, uint32_t mcs, const PerWaterfallConfig& cfg)
 {
+    // PHY abstraction (PER vs SINR after RBIR mapping) is well approximated
+    // by a logistic centred at the per-MCS waterfall midpoint theta_m.
+    //   PER(gamma) = max(floor, 1 / (1 + exp(slope * (gamma_dB - theta_m_dB))))
+    // theta_m is calibrated per HE-MCS against the AWGN PER@10%-target curves
+    // from the TGax evaluation methodology [TGax571] and the RBIR-based PHY
+    // abstraction validation in [Iyy22]. Packet-length extrapolation
+    // (PER_PL = 1 - (1 - PER_PL0)^(PL/PL0)) is documented separately in
+    // `RESULTS_FOR_PAPER.md`.
     const double theta = PerThetaForMcs(mcs, cfg);
     const double per = 1.0 / (1.0 + std::exp(cfg.slope * (snirDb - theta)));
     return std::max(per, cfg.floor);
@@ -59,9 +69,21 @@ MwToDbm(double mw)
 CoreHarnessLinkBudget
 RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
 {
-    if (cfg.channelModel == "cm8_rayleigh" && cfg.distanceM > cfg.cm8.maxDistanceM)
+    if (cfg.users < 1)
     {
-        throw std::runtime_error("CM8 distance exceeds configured max_distance_m=6 m");
+        throw std::runtime_error("core-harness: users must be >= 1");
+    }
+    // Validity range from the channel-model literature (loaded into
+    // `cfg.cm8.maxDistanceM` by the corresponding YAML preset):
+    //   cm8_rayleigh  -> 1-10 m [Mol09] (lighter proxy YAML may shrink this).
+    //   inf_nlos_dl   -> 1-600 m [3GPP38901] (paper subset stops earlier).
+    if ((cfg.channelModel == "cm8_rayleigh" || cfg.channelModel == "inf_nlos_dl") &&
+        cfg.distanceM > cfg.cm8.maxDistanceM)
+    {
+        throw std::runtime_error(
+            "core-harness: configured distance " + std::to_string(cfg.distanceM) +
+            " m exceeds max_distance_m=" + std::to_string(cfg.cm8.maxDistanceM) +
+            " m declared for channel '" + cfg.channelModel + "'");
     }
 
     std::mt19937 rng(cfg.seed);
@@ -77,11 +99,22 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
     double effectiveShadowStdDb = cfg.cm8.shadowingStdDb;
     bool useRayleigh = cfg.cm8.rayleighFading;
     QuadrigaTrace trace;
-    if (cfg.channelModel == "cm8_rayleigh")
+    if (cfg.channelModel == "cm8_rayleigh" || cfg.channelModel == "inf_nlos_dl")
     {
+        // Same log-distance + log-normal SF engine, different parameter set
+        // loaded via `cfg.cm8`. inf_nlos_dl is [3GPP38901] InF-DL NLOS.
         pathLossDb = CalculateCm8PathLossDb(cfg.distanceM, cfg.cm8);
-        budget.channelAbstraction = "controlled_rayleigh_path_loss_with_shadowing";
-        budget.fadingVarianceSource = useRayleigh ? "cm8_proxy" : "none";
+        if (cfg.channelModel == "inf_nlos_dl")
+        {
+            budget.channelAbstraction =
+                "stochastic_3gpp_inf_nlos_dl_log_distance_with_shadowing";
+            budget.fadingVarianceSource = useRayleigh ? "cm8_proxy" : "log_normal_only";
+        }
+        else
+        {
+            budget.channelAbstraction = "controlled_rayleigh_path_loss_with_shadowing";
+            budget.fadingVarianceSource = useRayleigh ? "cm8_proxy" : "none";
+        }
     }
     else if (cfg.channelModel == "quadriga_raytraced")
     {
@@ -117,7 +150,16 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
     {
         throw std::runtime_error("core-harness: unsupported channel model " + cfg.channelModel);
     }
-    std::normal_distribution<double> shadow(0.0, effectiveShadowStdDb);
+    // std::normal_distribution constructed with sigma == 0 is undefined per
+    // the standard (libstdc++ happens to return the mean reliably, but we do
+    // not rely on it). Build the distribution lazily: callers that disabled
+    // shadowing skip the draw entirely, so the run becomes deterministic on
+    // that dimension without any UB.
+    std::optional<std::normal_distribution<double>> shadowDist;
+    if (effectiveShadowStdDb > 0.0)
+    {
+        shadowDist.emplace(0.0, effectiveShadowStdDb);
+    }
 
     const double noiseFloorDbm = CalculateNoiseFloorDbm(cfg.bandwidthMHz * 1e6, cfg.noiseFigureDb);
     const double noiseMw = DbmToMw(noiseFloorDbm);
@@ -127,7 +169,7 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
     double jammerMw = 0.0;
     if (cfg.jammerMode != "none")
     {
-        if (cfg.channelModel == "cm8_rayleigh")
+        if (cfg.channelModel == "cm8_rayleigh" || cfg.channelModel == "inf_nlos_dl")
         {
             jammerPathLossDb = CalculateCm8PathLossDb(cfg.jammerDistanceM, cfg.cm8);
         }
@@ -168,9 +210,9 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
         if (timeS - lastFadingTimeS >= cfg.cm8.coherenceTimeMs * 1e-3)
         {
             double fadingDb = 0.0;
-            if (effectiveShadowStdDb > 0.0)
+            if (shadowDist)
             {
-                fadingDb += shadow(rng);
+                fadingDb += (*shadowDist)(rng);
             }
             if (useRayleigh)
             {
@@ -230,18 +272,42 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
     uint32_t rxDuringJammerOn = 0;
     uint32_t lostDuringJammerOn = 0;
     // Outage = SINR at first transmission attempt below the configured
-    // operating-point threshold (5 dB by default, matching reactive-jammer
-    // literature for BPSK control links). Tracked only for jammer-ON tx.
+    // operating-point threshold (5 dB by default; cf. the BPSK saturation
+    // throughput analysis in [Bay08]/[Bay13] and the anti-jamming metrics
+    // survey [Pel11]). Tracked only for jammer-ON transmissions.
     constexpr double kOutageThresholdDb = 5.0;
     uint32_t outageJammerOnEvents = 0;
     double worstCaseBurstLatencyS = 0.0;
     uint32_t maxConsecutiveDeadlineMisses = 0;
     uint32_t currentMissStreak = 0;
 
+    // S9 proactive critical-mask defer ([Fan26] Algorithm 1). Opt-in via
+    // `cfg.s9ProactiveDefer.enabled`. The default-disabled path keeps the
+    // historical archive bit-reproducible.
+    //
+    // Per-user observation cache: each entry stores the SNIR and jammer-active
+    // state seen at the previous packet for that user, plus a cooldown
+    // timestamp. With our 10 ms scheduling step and sub-millisecond CM8
+    // coherence, "1 slot of staleness" (paper §4.5) is captured as
+    // "previous-packet observation"; that is qualitatively beyond coherence
+    // and matches the moderate/conservative profiles' intent. The exact
+    // requested staleness is preserved in the CSV for reproducibility.
+    struct UserApState
+    {
+        double lastSnirDb{0.0};
+        bool lastJammerActive{false};
+        bool hasHistory{false};
+        double cooldownExpiresAtS{0.0};
+    };
+    std::vector<UserApState> userState(cfg.users);
+    const bool s9ProactiveDefer = (cfg.scenario == "S9") && cfg.s9ProactiveDefer.enabled;
+    uint64_t s9ProactiveDeferCount = 0;
+
     for (uint32_t seq = 0; seq < cfg.packets; ++seq)
     {
+        const uint32_t userId = seq % cfg.users;
         const double launchTimeS = seq * cfg.trafficIntervalS;
-        collector.RecordTx(seq);
+        collector.RecordTx(seq, userId);
         const bool jammerOnAtTx = jammerActiveAt(launchTimeS);
         txDuringJammerOnFlag[seq] = jammerOnAtTx;
         if (jammerOnAtTx)
@@ -260,12 +326,63 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
         bool success = false;
         double finalDelayS = 0.0;
 
+        // Algorithm 1 critical-mask defer (S9 only, opt-in). Evaluated BEFORE
+        // attempt 0 so that S9 protects packets *before* they enter a poor
+        // opportunity. The defer cost is one cooldown period inserted into
+        // `currentTimeS`, mirroring the paper's "reassign u to a better r*"
+        // operation in a single-link harness where the "better RU" collapses
+        // to "the same RU later, after the channel has decorrelated".
+        if (s9ProactiveDefer)
+        {
+            auto& us = userState[userId];
+            if (currentTimeS >= us.cooldownExpiresAtS)
+            {
+                // True channel observation feeding the estimator. The bias and
+                // Gaussian noise are added inside ComputeS9Estimate(); the
+                // staleness path is handled here by falling back to the
+                // previous packet's observation when the operator requests
+                // any non-zero `snirStalenessSlots`.
+                const double currentTrueSnirDb = snirAt(currentTimeS, 0.0);
+                const bool currentTrueJammer = jammerActiveAt(currentTimeS);
+                const bool useStale =
+                    cfg.s9Estimator.snirStalenessSlots > 0 && us.hasHistory;
+                const double obsSnirDb = useStale ? us.lastSnirDb : currentTrueSnirDb;
+                const bool obsJammer = useStale ? us.lastJammerActive : currentTrueJammer;
+                const auto est = ComputeS9Estimate(obsSnirDb, obsJammer, cfg.s9Estimator, rng);
+                const double perHat = CalculatePerSigmoid(est.gammaHatDb, cfg.mcs, cfg.per);
+                const bool critSnir = !cfg.s9Ablation.disableSnirMargin &&
+                                      est.gammaHatDb < cfg.s9Estimator.gammaOutDb;
+                const bool critPer = !cfg.s9Ablation.disablePerMargin &&
+                                     perHat > cfg.s9Estimator.perCrit;
+                const bool critJam =
+                    !cfg.s9Ablation.disableJammerFlag && est.jammerFlagHat;
+                if (critSnir || critPer || critJam)
+                {
+                    ++s9ProactiveDeferCount;
+                    if (!cfg.s9Ablation.disableCooldown)
+                    {
+                        currentTimeS += cooldownS;
+                        us.cooldownExpiresAtS = currentTimeS + cooldownS;
+                    }
+                }
+                // Always refresh the per-user observation cache (the AP has
+                // an HE-LTF / ACK / CCA sample at every scheduling step).
+                us.lastSnirDb = currentTrueSnirDb;
+                us.lastJammerActive = currentTrueJammer;
+                us.hasHistory = true;
+            }
+        }
+
         for (uint32_t attempt = 0; attempt <= cfg.retryLimit; ++attempt)
         {
             double extraGainDb = 0.0;
             // S8 (PLS-RTX): each retransmission is opportunistic, picking a
             // moment where the AP estimates a stronger channel state; modelled
-            // as a fixed effective-SINR gain on the retry attempt.
+            // as a fixed effective-SINR gain on the retry attempt. Information-
+            // theoretic background: secure HARQ throughput over block-fading
+            // wiretap channels [Tan09] (preprint arXiv:0712.4135) and the
+            // outage secrecy framework of [Blo08]/[Blo11]. See PolicyLabel()
+            // and BIBLIOGRAPHY.md for the full citation chain.
             if (cfg.scenario == "S8" && attempt > 0)
             {
                 extraGainDb = cfg.s8RtxSnirGainDb;
@@ -283,8 +400,9 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
             // Retransmission spacing. S9 (PLS-Realloc) inserts the configured
             // cooldown so the next attempt usually falls in a new coherence
             // window; S4/S8 follow plain binary-exponential-style backoff in
-            // slot units.
-            if (cfg.scenario == "S9")
+            // slot units. The `s9AblationDisableCooldown` switch (Tab. 11 of
+            // [Fan26]) collapses S9 to plain backoff for ablation rows.
+            if (cfg.scenario == "S9" && !cfg.s9Ablation.disableCooldown)
             {
                 currentTimeS += cooldownS;
             }
@@ -297,7 +415,7 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
 
         if (success)
         {
-            collector.RecordRx(seq, finalDelayS);
+            collector.RecordRx(seq, finalDelayS, userId);
             rxFlag[seq] = true;
             rxTimeS[seq] = launchTimeS + finalDelayS;
             if (jammerOnAtTx)
@@ -432,6 +550,7 @@ RunCoreHarness(const CoreHarnessConfig& cfg, MetricsCollector& collector)
     }
 
     budget.telemetry = telemetry;
+    budget.s9ProactiveDeferCount = s9ProactiveDeferCount;
     return budget;
 }
 

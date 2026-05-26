@@ -18,30 +18,40 @@ OUT="results/paper_v2"
 PLOTS_DIR="$OUT/plots"
 mkdir -p "$OUT" "$PLOTS_DIR"
 
-echo "[1/5] Merging shards..."
+echo "[1/7] Merging shards..."
 python3 scripts/merge_paper_shards.py --root "$OUT"
 
-echo "[2/5] Validating trends..."
+echo "[2/7] Validating trends..."
 python3 scripts/validate_trends.py \
   --input "$OUT/results.csv" \
   --output "$OUT/trend_violations.txt" \
   --json-output "$OUT/trend_violations.json"
 
-echo "[3/5] Building summary + reproducibility report..."
+echo "[3/7] Building summary + reproducibility report..."
 python3 scripts/parse_results.py --input "$OUT/results.csv" --output "$OUT/summary.csv"
 python3 scripts/make_report.py \
   --input "$OUT/results.csv" \
   --trend-report "$OUT/trend_violations.txt" \
   --output "$OUT/REPORT.md"
 
-echo "[4/5] Generating plots..."
+echo "[4/7] Generating plots..."
 # Generate plots split by channel so the legend stays focused per figure, and
 # a combined version for global views.
 python3 scripts/plot_results.py --input "$OUT/cm8/results.csv" --output-dir "$PLOTS_DIR/cm8"
 python3 scripts/plot_results.py --input "$OUT/quadriga/results.csv" --output-dir "$PLOTS_DIR/quadriga"
 python3 scripts/plot_results.py --input "$OUT/results.csv" --output-dir "$PLOTS_DIR"
 
-echo "[5/5] Archive sizing..."
+echo "[5/7] Cross-validation (ns3_core_harness vs ns3_wifi_yans, integral validation envelope)..."
+python3 scripts/run_cross_validation.py \
+  --output "$OUT/cross_validation"
+
+echo "[6/7] Seed-independence audit..."
+python3 scripts/check_seed_independence.py \
+  --input "$OUT/results.csv" \
+  --output "$OUT/SEED_AUDIT.md" \
+  --json-output "$OUT/SEED_AUDIT.json"
+
+echo "[7/7] Archive sizing..."
 {
   echo "--- merged CSV ---"
   wc -l "$OUT/results.csv" 2>/dev/null

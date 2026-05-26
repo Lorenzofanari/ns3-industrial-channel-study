@@ -21,6 +21,11 @@ namespace industrial
 // waterfall sigmoid for the active MCS, and resolves S4/S8/S9 retransmission
 // policy on the resulting Bernoulli outcome. This is the simulation path used
 // by the paper's statistical campaign (channel_fidelity=proxy).
+//
+// Multi-user fairness (`users` > 1): packet index `seq` belongs to user `seq %
+// users`. All users share the same PHY channel draw (common AP/STA geometry
+// and jammer); scheduling is idealised round-robin in time with one transmit
+// opportunity every `trafficIntervalS` (no MAC contention model).
 struct CoreHarnessConfig
 {
     std::string channelModel{"cm8_rayleigh"};
@@ -51,6 +56,19 @@ struct CoreHarnessConfig
     double ofdmSymbolUs{16.0};
 
     uint32_t seed{1};
+    // Number of users sharing the PHY in strict time-domain round-robin. Each
+    // user transmits on sequential global slots; default 1 preserves legacy
+    // single-link study behaviour.
+    uint32_t users{1};
+
+    // S9 estimator-impairment configuration ([Fan26] §4.5). Default is the
+    // ideal profile, which keeps the historical archive bit-reproducible.
+    S9EstimatorConfig s9Estimator;
+    // S9 component ablation switches ([Fan26] §6.8). Default all-false.
+    S9AblationConfig s9Ablation;
+    // Master switch for the paper Algorithm 1 critical-mask defer. When
+    // disabled (default) S9 retains its legacy cooldown-on-failure behaviour.
+    S9ProactiveDeferConfig s9ProactiveDefer;
 };
 
 struct CoreHarnessLinkBudget
@@ -69,6 +87,10 @@ struct CoreHarnessLinkBudget
     // Reported in the CSV so the channel-fidelity story is self-documenting.
     std::string fadingVarianceSource{"cm8_proxy"};
     AntiJammingTelemetry telemetry;
+    // Number of S9 proactive defer events that were triggered during the run.
+    // Always zero unless `S9ProactiveDeferConfig.enabled` is true and the
+    // scenario is S9. Exported as CSV column `s9_proactive_defer_count`.
+    uint64_t s9ProactiveDeferCount{0};
 };
 
 // HE-MCS data-rate table used by the harness; 20 MHz, 1 SS, GI 3.2 us.

@@ -1,0 +1,44 @@
+# S9 estimator-impairment sensitivity campaign (paper Tab. 10).
+#
+# Reproduces the matrix declared in [Fan26] §4.5 and §6.7:
+# Estimator profile in {ideal, moderate, conservative} swept against the
+# CM8 reactive-jamming snapshot at 20 dB target SNR, 10 dBm jammer, all three
+# study MCS values (HeMcs0, HeMcs1, HeMcs3), three payload sizes, two
+# distances, three seeds. Each row corresponds to one CSV file; the aggregator
+# `scripts/aggregate_s9_sensitivity.py` collapses them into the markdown table
+# that drops directly into the manuscript.
+#
+# Operational notes:
+# - This is an S9-only campaign because the profile knobs are only meaningful
+#   under the AP-side SNIR-estimate-driven scheduler. S4/S8 rows would carry
+#   the same metadata but exercise no estimator logic; we keep them out to
+#   reduce noise and run time.
+# - `s9_proactive_defer: true` enables the paper Algorithm 1 critical-mask
+#   defer; this is intentionally OFF in the historical archive and is the
+#   only knob required to populate Tab. 10.
+# - The clean baseline (jammer_mode=none) is included so the aggregator can
+#   compute robustness ratios against a per-profile clean reference.
+
+simulation:
+  simulation_path: ns3_core_harness
+  simulation_time_s: 1.0
+  warmup_s: 0.5
+  seeds: [20260507, 20260508, 20260509]
+  output_dir: results/s9_estimator_sensitivity
+  packets_per_run: 10000
+  deadline_ms: 10.0
+
+sweep:
+  channel_model: [cm8_rayleigh]
+  scenario: [S9]
+  mcs: [0, 1, 3]
+  payload_bits: [128, 256, 512]
+  cm8_distance_m: [3, 6]
+  jammer_mode: [none, reactive]
+  jammer_power_dbm: [0, 10]
+  # Tab. 10 dimensions:
+  s9_estimator_profile: [ideal, moderate, conservative]
+  s9_proactive_defer: true
+
+snr:
+  target_snr_db: [20]
