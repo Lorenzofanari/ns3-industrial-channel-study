@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -83,6 +84,18 @@ JoinSemicolon(const std::vector<std::string>& parts)
         ss << parts[i];
     }
     return ss.str();
+}
+
+bool
+LooksLikeJsonNumber(const std::string& value)
+{
+    if (value.empty())
+    {
+        return false;
+    }
+    char* end = nullptr;
+    std::strtod(value.c_str(), &end);
+    return end == value.c_str() + static_cast<std::ptrdiff_t>(value.size());
 }
 
 } // namespace
@@ -496,14 +509,7 @@ WriteJson(const std::string& path, const RunMetrics& metrics)
     for (std::size_t i = 0; i < header.size(); ++i)
     {
         const bool boolean = row[i] == "true" || row[i] == "false";
-        const bool numeric = !row[i].empty() &&
-                             std::all_of(row[i].begin(), row[i].end(), [](unsigned char c) {
-                                 return std::isdigit(c) || c == '-' || c == '+' || c == '.' ||
-                                        c == 'e' || c == 'E';
-                             }) &&
-                             std::any_of(row[i].begin(), row[i].end(), [](unsigned char c) {
-                                 return std::isdigit(c);
-                             });
+        const bool numeric = LooksLikeJsonNumber(row[i]);
         out << "  \"" << header[i] << "\": ";
         if (row[i].empty())
         {

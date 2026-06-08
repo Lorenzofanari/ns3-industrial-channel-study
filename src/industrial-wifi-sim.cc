@@ -105,6 +105,12 @@ main(int argc, char* argv[])
     double distanceM = 1.0;
     double jammerPowerDbm = 10.0;
     double jammerDistanceM = 1.0;
+    // Reactive-jammer duty cycle = reactiveBurstMs / reactiveIntervalMs.
+    // Defaults reproduce the historical archive (4 ms ON every 20 ms).
+    // Exposed as CLI flags so the duty-cycle / burst-length sensitivity
+    // sweep of Tab. 13 ([Fan26] §X) can be reproduced without recompiling.
+    double reactiveBurstMs = 4.0;
+    double reactiveIntervalMs = 20.0;
     double txPowerDbm = 18.0;
     double noiseFigureDb = 7.0;
     double bandwidthMHz = 20.0;
@@ -187,6 +193,13 @@ main(int argc, char* argv[])
     cmd.AddValue("jammerMode", "none, constant or reactive", jammerMode);
     cmd.AddValue("jammerPowerDbm", "Jammer transmit power in dBm", jammerPowerDbm);
     cmd.AddValue("jammerDistanceM", "Jammer-AP nominal distance in meters", jammerDistanceM);
+    cmd.AddValue("reactive-burst-ms",
+                 "Reactive jammer burst length in ms (default 4 ms)",
+                 reactiveBurstMs);
+    cmd.AddValue("reactive-interval-ms",
+                 "Reactive jammer period (burst + silence) in ms (default 20 ms; "
+                 "duty cycle = burst/interval)",
+                 reactiveIntervalMs);
     cmd.AddValue("seed", "RNG seed", seed);
     cmd.AddValue("packets", "Number of control packets to transmit", packets);
     cmd.AddValue("users",
@@ -530,6 +543,8 @@ main(int argc, char* argv[])
         harness.jammerMode = jammerMode;
         harness.jammerPowerDbm = jammerPowerDbm;
         harness.jammerDistanceM = jammerDistanceM;
+        harness.reactiveBurstS = reactiveBurstMs / 1000.0;
+        harness.reactiveIntervalS = reactiveIntervalMs / 1000.0;
         harness.scenario = scenario;
         harness.per = perConfig;
         harness.s8RtxSnirGainDb = s8RtxSnirGain;
