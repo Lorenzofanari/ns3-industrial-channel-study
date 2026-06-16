@@ -49,29 +49,34 @@ the CSV alone. The campaign uses CM8 reactive jamming, 20 dB target SNR,
 10 dBm jammer, the three study MCS, three seeds, three payloads, two
 distances -- the exact aggregation convention used by Table 8 of the paper.
 
-**What the data say** (from the current archive with 500 packets/row mini-run;
-the camera-ready will use 10 000 packets/row):
+**What the data say** (paper-grade, 100 000 packets/row, three seeds, three
+payloads, two distances; full table in `docs/paper_tables/tab10_sensitivity.md`):
 
-| MCS | Profile | PDR | PDR jammer-ON |
-|---|---|---|---|
-| 0 | ideal | 1.0000 | 1.0000 |
-| 0 | moderate | 1.0000 | 1.0000 |
-| 0 | conservative | 1.0000 | 1.0000 |
-| 1 | ideal | 1.0000 | 1.0000 |
-| 1 | moderate | 1.0000 | 1.0000 |
-| 1 | conservative | 1.0000 | 1.0000 |
-| 3 | ideal | 0.9840 | 0.9742 |
-| 3 | moderate | 0.9680 | 0.9509 |
-| 3 | conservative | 0.9751 | 0.9587 |
+| MCS | Profile | PDR | PDR jammer-ON | # defer events |
+|---|---|---|---|---|
+| 0 | ideal | 1.0000 | 1.0000 | 27 122 |
+| 0 | moderate | 1.0000 | 0.9999 | 31 041 |
+| 0 | conservative | 1.0000 | 0.9999 | 35 147 |
+| 1 | ideal | 1.0000 | 1.0000 | 29 188 |
+| 1 | moderate | 0.9998 | 0.9992 | 32 752 |
+| 1 | conservative | 0.9998 | 0.9992 | 37 252 |
+| 3 | ideal | 0.9869 | 0.9802 | 51 824 |
+| 3 | moderate | 0.9756 | 0.9608 | 54 876 |
+| 3 | conservative | 0.9765 | 0.9622 | 58 607 |
 
 **Key narrative arc** that should go into §6.7 once the table is in:
 
 > S9's gain at MCS 0 and MCS 1 is robust to AP-side observability quality:
-> the ideal, moderate, and conservative profiles deliver the same PDR/PDR-ON
-> to four decimal digits. At MCS 3 the gain partially erodes: PDR drops from
-> 0.984 (ideal) to 0.968 (moderate), and the jammer-ON PDR drops from 0.974
-> to 0.951. Interestingly, the conservative profile recovers part of the loss
-> (PDR 0.975) because its biased-toward-over-deferring behaviour protects
+> all three profiles deliver PDR ~= 1.0000 and jammer-ON PDR >= 0.9992 across
+> 32.4 M simulated packets. The estimator profile manifests itself instead
+> through the proactive-defer count, which rises monotonically from
+> 27 k (ideal) to 35 k (conservative) at MCS 0 and from 52 k to 59 k at
+> MCS 3 -- exactly the expected behaviour: noisier SNIR estimates and a
+> higher false-alarm jammer probability trip the critical-mask more often.
+> At MCS 3 the gain partially erodes under impairment: PDR drops from
+> 0.9869 (ideal) to 0.9756 (moderate), and jammer-ON PDR from 0.9802 to
+> 0.9608. The conservative profile recovers part of the loss
+> (PDR 0.9765, jammer-ON 0.9622) because its over-deferring bias protects
 > packets that the moderate profile occasionally clears as safe. This is
 > consistent with the paper's claim that S9 is most useful when AP-side
 > RU-quality information is sufficiently timely **and** sufficiently
@@ -90,28 +95,33 @@ The output is in `results/s9_ablation/tab11_ablation.md`. The campaign uses
 the six-user round-robin diagnostic subset so the Jain index in Table 11 is
 directly comparable to Table 12.
 
-**Headline numbers** from the current mini-run:
+**Headline numbers** (paper-grade, 100 000 packets/row, six-user round-robin
+fairness subset; full table in `docs/paper_tables/tab11_ablation.md`):
 
 | Variant | MCS3 reactive PDR | MCS3 reactive PDR-ON | Jain |
 |---|---|---|---|
-| `full` | 0.9840 | 0.9742 | 0.9999 |
-| `no_jammer_flag` | 0.9840 | 0.9742 | 0.9999 |
-| `no_cooldown` | **0.7367** | **0.6615** | 0.9888 |
-| `snir_only` | 0.9802 | 0.9793 | 0.9998 |
+| `full` | 0.9869 | 0.9802 | 1.0000 |
+| `no_jammer_flag` | 0.9869 | 0.9802 | 1.0000 |
+| `no_cooldown` | **0.7522** | **0.6739** | 0.9950 |
+| `snir_only` | 0.9824 | 0.9826 | 1.0000 |
 
 **Key narrative arc** for §6.8 once the table is in:
 
 > The ablation isolates the **anti-oscillation cooldown** as the dominant
 > contributor to the S9 gain. Removing the cooldown collapses MCS 3 PDR from
-> 0.984 to 0.737 (and the jammer-ON PDR from 0.974 to 0.662), even though
-> the critical-mask defer still fires. The reason is mechanical: without
-> cooldown, the next attempt falls inside the same coherence window as the
-> deferred one, so the channel state has not had time to decorrelate. The
-> jammer-flag and PER-margin checks add only marginal value on top of the
-> SNIR margin in the evaluated regime, suggesting that an even simpler
-> SNIR-only S9 variant would already capture most of the gain. We retain
-> the full S9 in the recommendation because the jammer-flag check carries
-> negligible computational cost (§4.6) and improves robustness on rows where
+> 0.9869 to 0.7522 (and the jammer-ON PDR from 0.9802 to 0.6739), even
+> though the critical-mask defer still fires. The reason is mechanical:
+> without cooldown, the next attempt falls inside the same coherence window
+> as the deferred one, so the channel state has not had time to decorrelate.
+> Jain's fairness index also drops slightly (0.9950 vs 1.0000) because the
+> aggressive re-attempts amplify per-user differences in instantaneous SNIR.
+> The jammer-flag check adds zero measurable value in this regime (`full`
+> and `no_jammer_flag` are identical to four decimal digits) because the
+> SNIR margin alone is already triggered whenever the reactive jammer is
+> active. The PER-margin check (`snir_only`) costs only ~0.5 pp of PDR at
+> MCS 3 reactive; on the clean baseline it costs ~0.7 pp. We retain the
+> full S9 in the recommendation because the additional checks carry
+> negligible computational cost (§4.6) and improve robustness on rows where
 > the SNIR margin alone is insufficient (e.g. shallow waterfall regions).
 
 ### B3. Add Figure 9 and Figure 10 (visual companions)

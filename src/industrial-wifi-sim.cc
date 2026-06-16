@@ -26,6 +26,7 @@
 #include "ns3/yans-wifi-helper.h"
 
 #include <cmath>
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <limits>
@@ -34,6 +35,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace ns3;
 using namespace ns3::industrial;
@@ -90,10 +92,21 @@ main(int argc, char* argv[])
     std::string channelModel = "cm8_rayleigh";
     std::string standard = "80211ax";
     std::string jammerMode = "none";
+    std::string jammerRuMode = "";
+    std::string jammedRuList = "";
+    std::string policy = "";
     std::string simulationPath = "ns3_wifi_yans";
     std::string output = "results/one_run.csv";
     std::string jsonOutput = "results/one_run.json";
     std::string tracePath = "data/quadriga/example_trace.csv";
+    // Coherence-time experiment instrumentation (all opt-in; empty/zero/default
+    // values keep legacy behaviour and bit-reproducible archives).
+    std::string channelCorrelationModel = "block";
+    std::string attemptLogPath = "";
+    std::string channelTraceLogPath = "";
+    std::string runId = "run";
+    double channelUpdatePeriodUs = 50.0;
+    uint32_t fadingSeed = 0;
     uint32_t seed = 1;
     uint32_t mcs = 0;
     uint32_t payloadBits = 128;
@@ -101,10 +114,24 @@ main(int argc, char* argv[])
     uint32_t users = 1;
     uint32_t retryLimit = 7;
     uint32_t s9CooldownSymbols = 76;
+    uint32_t numRus = 1;
+    uint32_t ruWidthTones = 26;
+    uint32_t jammedRuCount = 1;
     bool enableNoplsBaseline = false;
+    bool perRuChannelEnabled = false;
     double distanceM = 1.0;
     double jammerPowerDbm = 10.0;
     double jammerDistanceM = 1.0;
+    // Reactive-jammer duty cycle = reactiveBurstMs / reactiveIntervalMs.
+    // Defaults reproduce the historical archive (4 ms ON every 20 ms).
+    // Exposed as CLI flags so the duty-cycle / burst-length sensitivity
+    // sweep of Tab. 13 ([Fan26] §X) can be reproduced without recompiling.
+    double reactiveBurstMs = 4.0;
+    double reactiveIntervalMs = 20.0;
+    double jammerPhaseMs = 0.0;
+    double jammerFollowRetryProb = 0.0;
+    double ruCorrelationRho = 0.0;
+    double s9CooldownMs = -1.0;
     double txPowerDbm = 18.0;
     double noiseFigureDb = 7.0;
     double bandwidthMHz = 20.0;
@@ -171,6 +198,11 @@ main(int argc, char* argv[])
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("scenario", "Scenario label: S4, S8 or S9; S0 is accepted only with --enable-nopls-baseline", scenario);
+    cmd.AddValue("policy",
+                 "OFDMA policy override for per-RU core harness: baseline_pf, rtx_assist, "
+                 "cooldown_only, ru_retarget_only, cooldown_plus_retarget, random_ru_hop, "
+                 "oracle_best_ru or full_cdr_s9. Empty preserves legacy scenario mapping.",
+                 policy);
     cmd.AddValue("channelModel",
                  "Channel model: cm8_rayleigh (CM8 industrial NLOS proxy [Mol09]), "
                  "inf_nlos_dl (3GPP TR 38.901 InF-DL NLOS [3GPP38901]) or "
@@ -185,14 +217,38 @@ main(int argc, char* argv[])
     cmd.AddValue("payloadBits", "Application payload size in bits", payloadBits);
     cmd.AddValue("distanceM", "STA-AP distance in meters", distanceM);
     cmd.AddValue("jammerMode", "none, constant or reactive", jammerMode);
+    cmd.AddValue("jammer-ru-mode",
+                 "Per-RU jammer mode: none, broadband_constant, broadband_reactive, "
+                 "narrowband_constant, narrowband_reactive, partial_band_reactive_random, "
+                 "retry_aware_reactive",
+                 jammerRuMode);
+    cmd.AddValue("jammed-ru-list", "Comma/semicolon-separated RU ids affected by narrowband modes", jammedRuList);
+    cmd.AddValue("jammed-ru-count", "Number of RUs jammed by partial-band/random modes", jammedRuCount);
     cmd.AddValue("jammerPowerDbm", "Jammer transmit power in dBm", jammerPowerDbm);
     cmd.AddValue("jammerDistanceM", "Jammer-AP nominal distance in meters", jammerDistanceM);
+    cmd.AddValue("reactive-burst-ms",
+                 "Reactive jammer burst length in ms (default 4 ms)",
+                 reactiveBurstMs);
+    cmd.AddValue("reactive-interval-ms",
+                 "Reactive jammer period (burst + silence) in ms (default 20 ms; "
+                 "duty cycle = burst/interval)",
+                 reactiveIntervalMs);
+    cmd.AddValue("jammer-burst-ms", "Alias for --reactive-burst-ms used by OFDMA campaigns", reactiveBurstMs);
+    cmd.AddValue("jammer-interval-ms", "Alias for --reactive-interval-ms used by OFDMA campaigns", reactiveIntervalMs);
+    cmd.AddValue("jammer-phase-ms", "Reactive jammer phase offset in ms", jammerPhaseMs);
+    cmd.AddValue("jammer-power-dbm", "Alias for --jammerPowerDbm used by OFDMA campaigns", jammerPowerDbm);
+    cmd.AddValue("jammer-follow-retry-prob", "retry_aware_reactive probability of following the retry RU", jammerFollowRetryProb);
     cmd.AddValue("seed", "RNG seed", seed);
     cmd.AddValue("packets", "Number of control packets to transmit", packets);
     cmd.AddValue("users",
                  "Core-harness only: STAs sharing the PHY in round-robin (packet seq mod users). "
                  "Must be 1 for ns3_wifi_yans.",
                  users);
+    cmd.AddValue("num-users", "Alias for --users used by OFDMA campaign configs", users);
+    cmd.AddValue("per-ru-channel-enabled", "Enable per-RU channel/jammer/retry abstraction in core harness", perRuChannelEnabled);
+    cmd.AddValue("ru-correlation-rho", "Correlation coefficient for seed-controlled per-RU fading", ruCorrelationRho);
+    cmd.AddValue("num-rus", "Number of OFDMA resource units in the abstraction", numRus);
+    cmd.AddValue("ru-width-tones", "RU width in tones used for RU-distance telemetry", ruWidthTones);
     cmd.AddValue("retryLimit", "Wi-Fi long/short retry limit metadata", retryLimit);
     cmd.AddValue("enable-nopls-baseline", "Enable S0/NoPLS baseline policy metadata", enableNoplsBaseline);
     cmd.AddValue("per-theta-bpsk", "BPSK-1/2 PER waterfall midpoint in dB", perThetaBpskDb);
@@ -205,6 +261,7 @@ main(int argc, char* argv[])
     // short packets. Not derived from IEEE 802.11ax standard timing.
     // To sweep: use --s9-cooldown-symbols CLI argument.
     cmd.AddValue("s9-cooldown-symbols", "S9 harness cooldown in OFDM symbols", s9CooldownSymbols);
+    cmd.AddValue("s9-cooldown-ms", "Cooldown override in ms; negative means derive from OFDM symbols", s9CooldownMs);
     cmd.AddValue("eve-snir-bias-db", "Additive bias on gamma_E estimate in dB", eveSnirBiasDb);
     cmd.AddValue("eve-snir-noise-std-db", "Zero-mean Gaussian gamma_E estimate noise std in dB", eveSnirNoiseStdDb);
     cmd.AddValue("eve-snir-delay-slots", "Scheduling slots by which gamma_E estimate is stale", eveSnirDelaySlots);
@@ -259,11 +316,29 @@ main(int argc, char* argv[])
     cmd.AddValue("warmupS", "Application start time in seconds", warmupS);
     cmd.AddValue("intervalMs", "Periodic control interval in ms", intervalMs);
     cmd.AddValue("deadlineMs", "Safety deadline in ms", deadlineMs);
+    cmd.AddValue("deadline-ms", "Alias for --deadlineMs used by OFDMA campaigns", deadlineMs);
     cmd.AddValue("tracePath", "QuaDRiGa/ray-traced CSV path", tracePath);
     cmd.AddValue("pathLossExponent", "CM8-like path loss exponent", pathLossExponent);
     cmd.AddValue("referenceLossDb", "CM8-like reference loss in dB at 1 m", referenceLossDb);
     cmd.AddValue("shadowingStdDb", "CM8-like log-normal shadowing standard deviation", shadowingStdDb);
     cmd.AddValue("coherenceTimeMs", "CM8-like fading coherence time in ms", coherenceTimeMs);
+    cmd.AddValue("channel-correlation-model",
+                 "Temporal fading correlation model: block (legacy, default) or ar1 "
+                 "(Ornstein-Uhlenbeck, rho=exp(-dt/Tc))",
+                 channelCorrelationModel);
+    cmd.AddValue("channel-update-period-us",
+                 "Uniform sampling period (us) for the standalone channel-trace probe",
+                 channelUpdatePeriodUs);
+    cmd.AddValue("fading-seed",
+                 "Dedicated RNG seed for the AR(1) fading process; 0 derives from --seed",
+                 fadingSeed);
+    cmd.AddValue("attempt-log",
+                 "If set, write a per-(packet,attempt) CSV log to this path (per-RU harness)",
+                 attemptLogPath);
+    cmd.AddValue("channel-trace-log",
+                 "If set, write a uniform-time channel-gain probe to this path for Tc estimation",
+                 channelTraceLogPath);
+    cmd.AddValue("run-id", "Opaque run label written into the per-attempt log rows", runId);
     cmd.AddValue("industrialExcessLossDb", "CM8-like industrial excess loss in dB", industrialExcessLossDb);
     cmd.AddValue("rayleighFading", "Enable CM8-like Rayleigh fading", rayleighFading);
     cmd.AddValue("maxDistanceM",
@@ -299,6 +374,19 @@ main(int argc, char* argv[])
     {
         throw std::runtime_error("scenario must be S4, S8, S9, or gated S0");
     }
+    const std::string activePolicy = policy.empty() ? ScenarioDefaultPolicy(scenario) : policy;
+    const std::vector<std::string> validPolicies = {"baseline_pf",
+                                                    "rtx_assist",
+                                                    "cooldown_only",
+                                                    "ru_retarget_only",
+                                                    "cooldown_plus_retarget",
+                                                    "random_ru_hop",
+                                                    "oracle_best_ru",
+                                                    "full_cdr_s9"};
+    if (std::find(validPolicies.begin(), validPolicies.end(), activePolicy) == validPolicies.end())
+    {
+        throw std::runtime_error("unsupported policy: " + activePolicy);
+    }
     if (mcs != 0 && mcs != 1 && mcs != 3)
     {
         throw std::runtime_error("This study only supports MCS 0, 1 and 3");
@@ -322,6 +410,63 @@ main(int argc, char* argv[])
     if (users < 1)
     {
         throw std::runtime_error("users must be >= 1");
+    }
+    if (numRus < 1)
+    {
+        throw std::runtime_error("num-rus must be >= 1");
+    }
+    if (ruCorrelationRho < 0.0 || ruCorrelationRho > 1.0)
+    {
+        throw std::runtime_error("ru-correlation-rho must be in [0,1]");
+    }
+    if (jammerFollowRetryProb < 0.0 || jammerFollowRetryProb > 1.0)
+    {
+        throw std::runtime_error("jammer-follow-retry-prob must be in [0,1]");
+    }
+    if (!perRuChannelEnabled && !policy.empty())
+    {
+        throw std::runtime_error("--policy requires --per-ru-channel-enabled=true");
+    }
+    if (!perRuChannelEnabled && !jammerRuMode.empty())
+    {
+        throw std::runtime_error("--jammer-ru-mode requires --per-ru-channel-enabled=true");
+    }
+    if (perRuChannelEnabled && simulationPath != "ns3_core_harness")
+    {
+        throw std::runtime_error("per-RU channel mode is implemented only for ns3_core_harness");
+    }
+    std::string activeJammerRuMode = jammerRuMode;
+    if (activeJammerRuMode.empty())
+    {
+        if (jammerMode == "none")
+        {
+            activeJammerRuMode = "none";
+        }
+        else if (jammerMode == "constant")
+        {
+            activeJammerRuMode = "broadband_constant";
+        }
+        else if (jammerMode == "reactive")
+        {
+            activeJammerRuMode = "broadband_reactive";
+        }
+        else
+        {
+            activeJammerRuMode = jammerMode;
+        }
+    }
+    const std::vector<std::string> validJammerRuModes = {"none",
+                                                         "broadband_constant",
+                                                         "broadband_reactive",
+                                                         "narrowband_constant",
+                                                         "narrowband_reactive",
+                                                         "partial_band_reactive_random",
+                                                         "retry_aware_reactive"};
+    if (perRuChannelEnabled &&
+        std::find(validJammerRuModes.begin(), validJammerRuModes.end(), activeJammerRuMode) ==
+            validJammerRuModes.end())
+    {
+        throw std::runtime_error("unsupported jammer-ru-mode: " + activeJammerRuMode);
     }
 
     // Channel-fidelity gate (reviewer-grade). For CM8 the run is stochastic
@@ -381,6 +526,9 @@ main(int argc, char* argv[])
     cm8.referenceLossDb = referenceLossDb;
     cm8.shadowingStdDb = shadowingStdDb;
     cm8.coherenceTimeMs = coherenceTimeMs;
+    cm8.correlationModel = channelCorrelationModel;
+    cm8.channelUpdatePeriodUs = channelUpdatePeriodUs;
+    cm8.fadingSeed = fadingSeed;
     cm8.industrialExcessLossDb = industrialExcessLossDb;
     cm8.rayleighFading = rayleighFading;
     // maxDistanceM < 0 -> disable the validity check (operator opt-in to
@@ -429,19 +577,23 @@ main(int argc, char* argv[])
         context.ns3Version = Version::ShortVersion();
         context.seed = seed;
         context.scenario = scenario;
-        context.policy = scenario;
-        context.policyLabel = PolicyLabel(scenario);
-        context.policyPaperLabel = PaperPolicyLabel(scenario);
+        context.policy = perRuChannelEnabled ? activePolicy : scenario;
+        context.policyLabel = perRuChannelEnabled ? PolicyLabel(activePolicy) : PolicyLabel(scenario);
+        context.policyPaperLabel = perRuChannelEnabled ? PaperPolicyLabel(activePolicy) : PaperPolicyLabel(scenario);
         context.simulationPath = simulationPath;
         context.channelModel = ChannelDisplayName(channelModel);
         context.channelFidelity = ToString(ChannelFidelityForModel(channelModel));
         context.channelAbstraction = abstraction;
         context.tracePath = effectiveTracePath;
         context.mcs = mcs;
+        context.mcsLabel = McsLabel(mcs);
+        context.modulation = McsModulation(mcs);
+        context.codingRate = McsCodingRate(mcs);
         context.payloadBits = payloadBits;
         context.distanceM = distanceM;
-        context.jammerMode = jammerMode;
-        context.jammerPowerDbm = jammerMode != "none" ? jammerPowerDbm : 0.0;
+        context.jammerMode = perRuChannelEnabled ? activeJammerRuMode : jammerMode;
+        context.jammerPowerDbm =
+            (perRuChannelEnabled ? activeJammerRuMode != "none" : jammerMode != "none") ? jammerPowerDbm : 0.0;
         context.standard = standard;
         context.dataMode = DataModeFor(mcs, standard);
         context.retryLimit = retryLimit;
@@ -459,6 +611,7 @@ main(int argc, char* argv[])
         context.perSlope = perSlope;
         context.s8RtxSnirGain = s8RtxSnirGain;
         context.s9CooldownSymbols = s9CooldownSymbols;
+        context.s9CooldownMs = s9CooldownMs >= 0.0 ? s9CooldownMs : CooldownSymbolsToMs(s9CooldownSymbols);
         context.eveSnirBiasDb = eveSnirBiasDb;
         context.eveSnirNoiseStdDb = eveSnirNoiseStdDb;
         context.eveSnirDelaySlots = eveSnirDelaySlots;
@@ -480,7 +633,27 @@ main(int argc, char* argv[])
         context.s9ProactiveDeferEnabled = s9ProactiveDeferCfg.enabled;
         context.traceProvenance = traceProvenance;
         context.syntheticPlaceholderFinalClaimsAllowed = syntheticPlaceholderFinalClaimsAllowed;
+        context.coherenceTimeMs = coherenceTimeMs;
+        context.channelCorrelationModel = channelCorrelationModel;
         context.numUsers = users;
+        context.perRuChannelEnabled = perRuChannelEnabled;
+        context.numRus = numRus;
+        context.ruWidthTones = ruWidthTones;
+        context.ruCorrelationRho = ruCorrelationRho;
+        context.jammerRuMode = activeJammerRuMode;
+        context.jammerBurstMs = reactiveBurstMs;
+        context.jammerIntervalMs = reactiveIntervalMs;
+        context.jammerPhaseMs = jammerPhaseMs;
+        context.jammedRuCount = activeJammerRuMode == "none" ? 0 : std::min(jammedRuCount, numRus);
+        context.fractionRusJammed =
+            activeJammerRuMode == "none" ? 0.0 : static_cast<double>(std::min(jammedRuCount, numRus)) /
+                                                    static_cast<double>(numRus);
+        if (activeJammerRuMode == "broadband_constant" || activeJammerRuMode == "broadband_reactive")
+        {
+            context.jammedRuCount = numRus;
+            context.fractionRusJammed = 1.0;
+        }
+        context.jammerFollowRetryProb = jammerFollowRetryProb;
         // Fading-variance source: drives reviewer-readable channel-fidelity
         // semantics. The harness path knows the actual source from its own
         // dispatch (trace-derived vs CM8 proxy vs deterministic) and overrides
@@ -508,7 +681,7 @@ main(int argc, char* argv[])
 
     if (simulationPath == "ns3_core_harness")
     {
-        if (jammerMode != "none" && jammerMode != "constant" && jammerMode != "reactive")
+        if (!perRuChannelEnabled && jammerMode != "none" && jammerMode != "constant" && jammerMode != "reactive")
         {
             throw std::runtime_error("jammerMode must be none, constant or reactive");
         }
@@ -530,17 +703,34 @@ main(int argc, char* argv[])
         harness.jammerMode = jammerMode;
         harness.jammerPowerDbm = jammerPowerDbm;
         harness.jammerDistanceM = jammerDistanceM;
+        harness.reactiveBurstS = reactiveBurstMs / 1000.0;
+        harness.reactiveIntervalS = reactiveIntervalMs / 1000.0;
         harness.scenario = scenario;
+        harness.policy = perRuChannelEnabled ? activePolicy : "";
         harness.per = perConfig;
         harness.s8RtxSnirGainDb = s8RtxSnirGain;
         harness.s9CooldownSymbols = s9CooldownSymbols;
+        harness.s9CooldownMs = s9CooldownMs;
+        harness.perRuChannelEnabled = perRuChannelEnabled;
+        harness.ruCorrelationRho = ruCorrelationRho;
+        harness.numRus = numRus;
+        harness.ruWidthTones = ruWidthTones;
+        harness.jammerRuMode = activeJammerRuMode;
+        harness.jammedRuList = jammedRuList;
+        harness.jammedRuCount = jammedRuCount;
+        harness.jammerPhaseS = jammerPhaseMs / 1000.0;
+        harness.jammerFollowRetryProb = jammerFollowRetryProb;
         harness.seed = seed;
         harness.users = users;
         harness.s9Estimator = s9EstimatorCfg;
         harness.s9Ablation = s9AblationCfg;
         harness.s9ProactiveDefer = s9ProactiveDeferCfg;
+        harness.runId = runId;
+        harness.attemptLogPath = attemptLogPath;
+        harness.channelTraceLogPath = channelTraceLogPath;
 
         Ptr<MetricsCollector> collector = Create<MetricsCollector>();
+        EmitChannelTrace(harness);
         const CoreHarnessLinkBudget budget = RunCoreHarness(harness, *collector);
 
         RunContext context = buildRunContext(budget.channelAbstraction, budget.tracePath);
@@ -554,6 +744,43 @@ main(int argc, char* argv[])
                                                 budget.jammerPowerAtReceiverDbm,
                                                 budget.telemetry);
         metrics.s9ProactiveDeferCount = budget.s9ProactiveDeferCount;
+        if (budget.ofdmaTelemetry.populated)
+        {
+            metrics.context.numRus = budget.ofdmaTelemetry.numRus;
+            metrics.context.ruWidthTones = budget.ofdmaTelemetry.ruWidthTones;
+            metrics.context.perRuChannelEnabled = budget.ofdmaTelemetry.perRuChannelEnabled;
+            metrics.context.ruCorrelationRho = budget.ofdmaTelemetry.ruCorrelationRho;
+            metrics.context.jammerRuMode = budget.ofdmaTelemetry.jammerRuMode;
+            metrics.context.jammedRuCount = budget.ofdmaTelemetry.jammedRuCount;
+            metrics.context.fractionRusJammed = budget.ofdmaTelemetry.fractionRusJammed;
+            metrics.context.s9CooldownSymbols = budget.ofdmaTelemetry.cooldownSymbols;
+            metrics.context.s9CooldownMs = budget.ofdmaTelemetry.cooldownMs;
+            metrics.context.ruIdInitial = budget.ofdmaTelemetry.ruIdInitial;
+            metrics.context.ruIdRetry = budget.ofdmaTelemetry.ruIdRetry;
+            metrics.context.ruChanged = budget.ofdmaTelemetry.ruChanged;
+            metrics.context.ruDistanceTones = budget.ofdmaTelemetry.ruDistanceTones;
+            metrics.context.ruWasJammedInitial = budget.ofdmaTelemetry.ruWasJammedInitial;
+            metrics.context.ruWasJammedRetry = budget.ofdmaTelemetry.ruWasJammedRetry;
+            metrics.context.sinrInitialDb = budget.ofdmaTelemetry.sinrInitialDb;
+            metrics.context.sinrRetryDb = budget.ofdmaTelemetry.sinrRetryDb;
+            metrics.context.estimatedSinrInitialDb = budget.ofdmaTelemetry.estimatedSinrInitialDb;
+            metrics.context.estimatedSinrRetryDb = budget.ofdmaTelemetry.estimatedSinrRetryDb;
+            metrics.context.perInitial = budget.ofdmaTelemetry.perInitial;
+            metrics.context.perRetry = budget.ofdmaTelemetry.perRetry;
+            metrics.context.estimatedPerInitial = budget.ofdmaTelemetry.estimatedPerInitial;
+            metrics.context.estimatedPerRetry = budget.ofdmaTelemetry.estimatedPerRetry;
+            metrics.context.estimatedBestRu = budget.ofdmaTelemetry.estimatedBestRu;
+            metrics.context.oracleBestRu = budget.ofdmaTelemetry.oracleBestRu;
+            metrics.context.ruRetargetSuccess = budget.ofdmaTelemetry.ruRetargetSuccess;
+            metrics.context.retryLandedAfterBurst = budget.ofdmaTelemetry.retryLandedAfterBurst;
+            metrics.context.retryLandedSameBurst = budget.ofdmaTelemetry.retryLandedSameBurst;
+            metrics.context.retryLandedOnJammedRu = budget.ofdmaTelemetry.retryLandedOnJammedRu;
+            metrics.context.deadlineMissDueToCooldown = budget.ofdmaTelemetry.deadlineMissDueToCooldown;
+            metrics.context.deadlineMissDueToLoss = budget.ofdmaTelemetry.deadlineMissDueToLoss;
+            metrics.context.deadlineMissDueToQueueing = budget.ofdmaTelemetry.deadlineMissDueToQueueing;
+            metrics.context.deadlineMissDueToRepeatedRetry =
+                budget.ofdmaTelemetry.deadlineMissDueToRepeatedRetry;
+        }
         WriteCsv(output, metrics);
         WriteJson(jsonOutput, metrics);
         Simulator::Destroy();

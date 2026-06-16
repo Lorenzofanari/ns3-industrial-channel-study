@@ -7,6 +7,7 @@
 #include "ns3/simple-ref-count.h"
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -36,6 +37,9 @@ struct RunContext
     std::string channelAbstraction;
     std::string tracePath;
     uint32_t mcs{0};
+    std::string mcsLabel{"BPSK_1_2"};
+    std::string modulation{"BPSK"};
+    std::string codingRate{"1/2"};
     uint32_t payloadBits{128};
     double distanceM{1.0};
     std::string jammerMode{"none"};
@@ -55,6 +59,7 @@ struct RunContext
     double perSlope{1.15};
     double s8RtxSnirGain{1.35};
     uint32_t s9CooldownSymbols{76};
+    double s9CooldownMs{1.216};
     double eveSnirBiasDb{0.0};
     double eveSnirNoiseStdDb{0.0};
     uint32_t eveSnirDelaySlots{0};
@@ -85,6 +90,44 @@ struct RunContext
 
     // Core-harness multi-user fairness: round-robin users sharing one PHY draw.
     uint32_t numUsers{1};
+    bool perRuChannelEnabled{false};
+    uint32_t numRus{1};
+    uint32_t ruWidthTones{26};
+    double ruCorrelationRho{0.0};
+    std::string jammerRuMode{"none"};
+    double jammerBurstMs{0.0};
+    double jammerIntervalMs{0.0};
+    double jammerPhaseMs{0.0};
+    uint32_t jammedRuCount{0};
+    double fractionRusJammed{0.0};
+    double jammerFollowRetryProb{0.0};
+    uint32_t ruIdInitial{0};
+    uint32_t ruIdRetry{0};
+    bool ruChanged{false};
+    uint32_t ruDistanceTones{0};
+    bool ruWasJammedInitial{false};
+    bool ruWasJammedRetry{false};
+    double sinrInitialDb{0.0};
+    double sinrRetryDb{std::numeric_limits<double>::quiet_NaN()};
+    double estimatedSinrInitialDb{0.0};
+    double estimatedSinrRetryDb{std::numeric_limits<double>::quiet_NaN()};
+    double perInitial{0.0};
+    double perRetry{std::numeric_limits<double>::quiet_NaN()};
+    double estimatedPerInitial{0.0};
+    double estimatedPerRetry{std::numeric_limits<double>::quiet_NaN()};
+    uint32_t estimatedBestRu{0};
+    uint32_t oracleBestRu{0};
+    double ruRetargetSuccess{std::numeric_limits<double>::quiet_NaN()};
+    double retryLandedAfterBurst{std::numeric_limits<double>::quiet_NaN()};
+    double retryLandedSameBurst{std::numeric_limits<double>::quiet_NaN()};
+    double retryLandedOnJammedRu{std::numeric_limits<double>::quiet_NaN()};
+    double deadlineMissDueToCooldown{0.0};
+    double deadlineMissDueToLoss{0.0};
+    double deadlineMissDueToQueueing{0.0};
+    double deadlineMissDueToRepeatedRetry{0.0};
+    double temporalGain{std::numeric_limits<double>::quiet_NaN()};
+    double ruDiversityGain{std::numeric_limits<double>::quiet_NaN()};
+    double combinedGain{std::numeric_limits<double>::quiet_NaN()};
 
     // Trace provenance (channel fidelity gating). Filled by the simulator for
     // every CSV row so reviewers can immediately tell whether a result row
@@ -102,6 +145,11 @@ struct RunContext
     // `trace_column` (QuaDRiGa `fading_std_db`), `cm8_proxy` (CM8 log-normal +
     // Rayleigh draws), or `none` (deterministic path-loss only).
     std::string fadingVarianceSource{"cm8_proxy"};
+
+    // Coherence-time experiment provenance. Always written so every row in any
+    // campaign self-documents its fading temporal model.
+    double coherenceTimeMs{5.0};
+    std::string channelCorrelationModel{"block"};
 };
 
 struct RunMetrics

@@ -120,6 +120,13 @@ std::string PolicyLabel(const std::string& scenario);
 // available without breaking historical scripts.
 std::string PaperPolicyLabel(const std::string& scenario);
 
+std::string McsLabel(uint32_t mcs);
+std::string McsModulation(uint32_t mcs);
+std::string McsCodingRate(uint32_t mcs);
+std::string ScenarioDefaultPolicy(const std::string& scenario);
+std::string PolicyDisplayLabel(const std::string& policyOrScenario);
+double CooldownSymbolsToMs(uint32_t symbols, double ofdmSymbolUs = 16.0);
+
 double PerThetaForMcs(uint32_t mcs, const PerWaterfallConfig& config);
 bool EveEstimationIdeal(const EveEstimationConfig& config);
 double ApplyEveSnirEstimate(double gammaEDb, const EveEstimationConfig& config, std::mt19937& rng);

@@ -376,14 +376,26 @@ Run the two campaigns and produce the publication-ready markdown tables:
 ```bash
 # Tab. 10 (estimator sensitivity)
 python3 scripts/run_sweep.py --config configs/s9_estimator_sensitivity.yaml
-python3 scripts/aggregate_s9_sensitivity.py
-# -> results/s9_estimator_sensitivity/tab10_sensitivity.md
+python3 scripts/aggregate_s9_sensitivity.py \
+  --input-dir results/s9_estimator_sensitivity \
+  --output    docs/paper_tables/tab10_sensitivity.md
 
 # Tab. 11 (component ablation)
 python3 scripts/run_sweep.py --config configs/s9_ablation.yaml
-python3 scripts/aggregate_s9_ablation.py
-# -> results/s9_ablation/tab11_ablation.md
+python3 scripts/aggregate_s9_ablation.py \
+  --input-dir results/s9_ablation \
+  --output    docs/paper_tables/tab11_ablation.md
 ```
+
+The canonical paper-grade tables (100 000 packets/row, three seeds, three
+payloads, two distances) are tracked in `docs/paper_tables/`:
+
+- `docs/paper_tables/tab10_sensitivity.md` -- estimator-impairment sensitivity
+- `docs/paper_tables/tab11_ablation.md` -- component ablation
+
+For applying these results to the manuscript via ChatGPT, follow the
+operator guide in `docs/PAPER_CHATGPT_GUIDE.md`, which contains
+copy-paste-ready prompts indexed against `PAPER_IMPROVEMENTS.md`.
 
 Every row of both campaigns carries the full S9 parameter set as CSV columns
 (`s9_estimator_profile`, `s9_snir_noise_std_db`, `s9_snir_bias_db`,

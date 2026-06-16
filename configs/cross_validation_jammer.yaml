@@ -1,0 +1,34 @@
+# Extended cross-validation matrix: same headline operating point as the main
+# campaign (cm8_rayleigh, distance 3 m, target SNR 20 dB), broadened to
+# MCS {0,1,3} and jammer_mode {none, reactive}. Companion to
+# configs/cross_validation_subset.yaml (which is no-jammer, MCS-0 only).
+#
+# Rationale: reviewers ask whether the harness PDR/PER conclusions hold under
+# the full Wi-Fi stack at the SAME operating point where the paper claims
+# anti-jamming gains. This config keeps a single headline SNR but adds:
+#   - the two MCS rates used in the campaign (0 and 1) plus the highest
+#     supported MCS (3) where the PER waterfall is steepest;
+#   - the reactive-jammer mode that drives the headline result.
+# Matrix: 3 scenarios x 3 mcs x 2 jammers x 1 snr x 2 seeds = 36 runs per
+# backend (72 runs total harness+yans). Wall-clock budget on a single core is
+# typically below one hour for the Yans path.
+
+simulation:
+  simulation_time_s: 220.0
+  warmup_s: 1.0
+  seeds: [20260507, 20260508]
+  output_dir: results/cross_validation_jammer
+  packets_per_run: 20000
+  deadline_ms: 10.0
+
+sweep:
+  channel_model: [cm8_rayleigh]
+  scenario: [S4, S8, S9]
+  mcs: [0, 1, 3]
+  payload_bits: [128]
+  cm8_distance_m: [3]
+  jammer_mode: [none, reactive]
+  jammer_power_dbm: [10]
+
+quadriga:
+  trace_path: data/quadriga/example_trace.csv
