@@ -99,6 +99,38 @@ PolicyLabel(const std::string& scenario)
     {
         return "PLS-Realloc";
     }
+    if (scenario == "baseline_pf")
+    {
+        return "Baseline-PF";
+    }
+    if (scenario == "rtx_assist")
+    {
+        return "RTX-Assist";
+    }
+    if (scenario == "cooldown_only")
+    {
+        return "Cooldown-Only";
+    }
+    if (scenario == "ru_retarget_only")
+    {
+        return "RU-Retarget-Only";
+    }
+    if (scenario == "cooldown_plus_retarget")
+    {
+        return "Cooldown+Retarget";
+    }
+    if (scenario == "random_ru_hop")
+    {
+        return "Random-RU-Hop";
+    }
+    if (scenario == "oracle_best_ru")
+    {
+        return "Oracle-Best-RU";
+    }
+    if (scenario == "full_cdr_s9")
+    {
+        return "Full-CDR-S9";
+    }
     throw std::runtime_error("unsupported policy/scenario: " + scenario);
 }
 
@@ -127,7 +159,119 @@ PaperPolicyLabel(const std::string& scenario)
     {
         return "Realloc";
     }
+    if (scenario == "baseline_pf")
+    {
+        return "Baseline-PF";
+    }
+    if (scenario == "rtx_assist")
+    {
+        return "RTX-Assist";
+    }
+    if (scenario == "cooldown_only")
+    {
+        return "Cooldown-Only";
+    }
+    if (scenario == "ru_retarget_only")
+    {
+        return "RU-Retarget-Only";
+    }
+    if (scenario == "cooldown_plus_retarget")
+    {
+        return "Cooldown+Retarget";
+    }
+    if (scenario == "random_ru_hop")
+    {
+        return "Random-RU-Hop";
+    }
+    if (scenario == "oracle_best_ru")
+    {
+        return "Oracle-Best-RU";
+    }
+    if (scenario == "full_cdr_s9")
+    {
+        return "Full-CDR-S9";
+    }
     throw std::runtime_error("unsupported policy/scenario: " + scenario);
+}
+
+std::string
+McsLabel(uint32_t mcs)
+{
+    if (mcs == 0)
+    {
+        return "BPSK_1_2";
+    }
+    if (mcs == 1)
+    {
+        return "QPSK_1_2";
+    }
+    if (mcs == 3)
+    {
+        return "16QAM_1_2";
+    }
+    throw std::runtime_error("MCS label is only defined for MCS 0, 1 and 3");
+}
+
+std::string
+McsModulation(uint32_t mcs)
+{
+    if (mcs == 0)
+    {
+        return "BPSK";
+    }
+    if (mcs == 1)
+    {
+        return "QPSK";
+    }
+    if (mcs == 3)
+    {
+        return "16-QAM";
+    }
+    throw std::runtime_error("MCS modulation is only defined for MCS 0, 1 and 3");
+}
+
+std::string
+McsCodingRate(uint32_t mcs)
+{
+    if (mcs == 0 || mcs == 1 || mcs == 3)
+    {
+        return "1/2";
+    }
+    throw std::runtime_error("MCS coding rate is only defined for MCS 0, 1 and 3");
+}
+
+std::string
+ScenarioDefaultPolicy(const std::string& scenario)
+{
+    if (scenario == "S0")
+    {
+        return "baseline_pf";
+    }
+    if (scenario == "S4")
+    {
+        return "baseline_pf";
+    }
+    if (scenario == "S8")
+    {
+        return "rtx_assist";
+    }
+    if (scenario == "S9")
+    {
+        return "full_cdr_s9";
+    }
+    return scenario;
+}
+
+std::string
+PolicyDisplayLabel(const std::string& policyOrScenario)
+{
+    return PaperPolicyLabel(policyOrScenario);
+}
+
+double
+CooldownSymbolsToMs(uint32_t symbols, double ofdmSymbolUs)
+{
+    return static_cast<double>(symbols) * ofdmSymbolUs / 1000.0;
 }
 
 double

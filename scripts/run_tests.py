@@ -204,6 +204,157 @@ def main() -> int:
     assert_true(float(fair6_row["jain_fairness_index"]) >= 0.99,
                 "Symmetric six-user round-robin should keep Jain fairness high at moderate sample sizes")
 
+    ofdma_common = [
+        str(ROOT / "build/industrial-wifi-sim"),
+        "--simulationPath=ns3_core_harness",
+        "--per-ru-channel-enabled=true",
+        "--scenario=S4",
+        "--channelModel=cm8_rayleigh",
+        "--mcs=0",
+        "--payloadBits=128",
+        "--distanceM=3",
+        "--seed=20260507",
+        "--packets=200",
+        "--users=6",
+        "--num-rus=4",
+        "--ru-width-tones=26",
+        "--ru-correlation-rho=0.2",
+        "--jammer-power-dbm=10",
+        "--jammer-burst-ms=4",
+        "--jammer-interval-ms=20",
+        "--jammer-phase-ms=0",
+        "--txPowerDbm=-30",
+    ]
+
+    ofdma_schema = ROOT / "results/tests/ofdma_schema.csv"
+    subprocess.run([
+        *ofdma_common,
+        "--policy=cooldown_plus_retarget",
+        "--jammer-ru-mode=narrowband_reactive",
+        "--jammed-ru-list=0",
+        f"--output={ofdma_schema}",
+        f"--jsonOutput={ofdma_schema.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    ofdma_row = read_csv_rows(ofdma_schema)[0]
+    required_schema = {
+        "num_users",
+        "num_rus",
+        "mcs",
+        "mcs_label",
+        "modulation",
+        "coding_rate",
+        "payload_bits",
+        "distance_m",
+        "seed",
+        "policy",
+        "ru_id_initial",
+        "ru_id_retry",
+        "ru_changed",
+        "ru_distance_tones",
+        "ru_was_jammed_initial",
+        "ru_was_jammed_retry",
+        "sinr_initial_db",
+        "sinr_retry_db",
+        "estimated_sinr_initial_db",
+        "estimated_sinr_retry_db",
+        "per_initial",
+        "per_retry",
+        "estimated_per_initial",
+        "estimated_per_retry",
+        "estimated_best_ru",
+        "oracle_best_ru",
+        "ru_retarget_success",
+        "cooldown_symbols",
+        "cooldown_ms",
+        "retry_limit",
+        "deadline_ms",
+        "jammer_ru_mode",
+        "jammer_power_dbm",
+        "jammer_burst_ms",
+        "jammer_interval_ms",
+        "jammer_duty_cycle",
+        "jammer_phase_ms",
+        "jammed_ru_count",
+        "fraction_rus_jammed",
+        "retry_landed_after_burst",
+        "retry_landed_same_burst",
+        "retry_landed_on_jammed_ru",
+        "estimator_noise_db",
+        "estimator_staleness_slots",
+        "jammer_missed_detection_prob",
+        "jammer_false_alarm_prob",
+        "deadline_miss_due_to_cooldown",
+        "deadline_miss_due_to_loss",
+        "deadline_miss_due_to_queueing",
+        "temporal_gain",
+        "ru_diversity_gain",
+        "combined_gain",
+    }
+    missing_schema = sorted(required_schema - set(ofdma_row))
+    assert_true(not missing_schema, f"OFDMA CSV schema missing fields: {missing_schema}")
+    assert_true(ofdma_row["policy"] == "cooldown_plus_retarget",
+                "Per-RU policy override must be exported as the policy column")
+    assert_true(ofdma_row["mcs_label"] == "BPSK_1_2",
+                "Per-RU rows must export the MCS label")
+    assert_true(ofdma_row["jammer_ru_mode"] == "narrowband_reactive",
+                "Per-RU rows must export the jammer RU mode")
+    assert_true(ofdma_row["jammed_ru_count"] == "1",
+                "Narrowband jammer must report one jammed RU")
+
+    broadband = ROOT / "results/tests/ofdma_broadband.csv"
+    subprocess.run([
+        *ofdma_common,
+        "--policy=cooldown_only",
+        "--jammer-ru-mode=broadband_reactive",
+        f"--output={broadband}",
+        f"--jsonOutput={broadband.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    broadband_row = read_csv_rows(broadband)[0]
+    assert_true(broadband_row["jammed_ru_count"] == "4",
+                "Broadband per-RU jammer must report all RUs jammed")
+    assert_true(abs(float(broadband_row["fraction_rus_jammed"]) - 1.0) < 1e-12,
+                "Broadband per-RU jammer fraction must be 1")
+
+    partial = ROOT / "results/tests/ofdma_partial.csv"
+    subprocess.run([
+        *ofdma_common,
+        "--policy=random_ru_hop",
+        "--jammer-ru-mode=partial_band_reactive_random",
+        "--jammed-ru-count=2",
+        f"--output={partial}",
+        f"--jsonOutput={partial.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    partial_row = read_csv_rows(partial)[0]
+    assert_true(partial_row["jammed_ru_count"] == "2",
+                "Partial-band jammer must report exactly K jammed RUs")
+    assert_true(abs(float(partial_row["fraction_rus_jammed"]) - 0.5) < 1e-12,
+                "Partial-band jammer fraction must equal K / num_rus")
+
+    phase_a = ROOT / "results/tests/ofdma_phase_a.csv"
+    phase_b = ROOT / "results/tests/ofdma_phase_b.csv"
+    phase_cmd = [
+        *ofdma_common,
+        "--policy=oracle_best_ru",
+        "--jammer-ru-mode=partial_band_reactive_random",
+        "--jammed-ru-count=2",
+        "--jammer-phase-ms=2",
+    ]
+    subprocess.run([
+        *phase_cmd,
+        f"--output={phase_a}",
+        f"--jsonOutput={phase_a.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    subprocess.run([
+        *phase_cmd,
+        f"--output={phase_b}",
+        f"--jsonOutput={phase_b.with_suffix('.json')}",
+    ], cwd=ROOT, check=True)
+    phase_row_a = read_csv_rows(phase_a)[0]
+    phase_row_b = read_csv_rows(phase_b)[0]
+    for key in ["pdr", "ru_id_retry", "estimated_best_ru", "oracle_best_ru", "retry_landed_on_jammed_ru"]:
+        assert_true(phase_row_a[key] == phase_row_b[key],
+                    f"Per-RU phase/seed run must be reproducible for {key}")
+
     yans_multi = subprocess.run([
         str(ROOT / "build/industrial-wifi-sim"),
         "--scenario=S4",

@@ -176,6 +176,46 @@ def recompute_jammer_deltas(rows: list[dict[str, str]]) -> None:
         row["per_increase_due_to_jammer"] = str(per - base_per)
 
 
+def recompute_policy_gains(rows: list[dict[str, str]]) -> None:
+    keys = [
+        "channel_model",
+        "mcs",
+        "payload_bits",
+        "distance_m",
+        "seed",
+        "num_users",
+        "num_rus",
+        "jammer_ru_mode",
+        "jammer_power_dbm",
+        "jammer_burst_ms",
+        "jammer_interval_ms",
+        "jammer_phase_ms",
+        "jammed_ru_count",
+        "cooldown_symbols",
+        "target_snr_db",
+    ]
+    grouped: dict[tuple[str, ...], dict[str, dict[str, str]]] = {}
+    for row in rows:
+        key = tuple(row.get(k, "") for k in keys)
+        grouped.setdefault(key, {})[row.get("policy", "")] = row
+    for members in grouped.values():
+        baseline = members.get("baseline_pf")
+        cooldown = members.get("cooldown_only")
+        cdr = members.get("cooldown_plus_retarget")
+        if not (baseline and cooldown and cdr):
+            continue
+        pdr_baseline = float(baseline["pdr"])
+        pdr_cooldown = float(cooldown["pdr"])
+        pdr_cdr = float(cdr["pdr"])
+        temporal = pdr_cooldown - pdr_baseline
+        ru_diversity = pdr_cdr - pdr_cooldown
+        combined = pdr_cdr - pdr_baseline
+        for row in members.values():
+            row["temporal_gain"] = str(temporal)
+            row["ru_diversity_gain"] = str(ru_diversity)
+            row["combined_gain"] = str(combined)
+
+
 def assert_single_channel_fidelity(rows: list[dict[str, str]], output_path: Path) -> None:
     fidelities = sorted({row.get("channel_fidelity", "") for row in rows})
     if len(fidelities) > 1:
@@ -218,6 +258,9 @@ def main() -> int:
         help="Override the seed list from the config file. Repeat to enumerate multiple seeds; "
              "useful when sharding a large campaign across parallel processes.",
     )
+    parser.add_argument("--max-runs", type=int, default=None, help="Execute at most this many eligible runs after shard filtering")
+    parser.add_argument("--shard-index", type=int, default=None, help="0-based shard index for deterministic modulo sharding")
+    parser.add_argument("--shard-count", type=int, default=None, help="Total number of deterministic modulo shards")
     parser.add_argument(
         "--require-measured-trace",
         action="store_true",
@@ -226,6 +269,15 @@ def main() -> int:
              "placeholder trace.",
     )
     args = parser.parse_args()
+    if (args.shard_index is None) != (args.shard_count is None):
+        raise ValueError("--shard-index and --shard-count must be provided together")
+    if args.shard_count is not None:
+        if args.shard_count <= 0:
+            raise ValueError("--shard-count must be positive")
+        if args.shard_index < 0 or args.shard_index >= args.shard_count:
+            raise ValueError("--shard-index must satisfy 0 <= shard-index < shard-count")
+    if args.max_runs is not None and args.max_runs <= 0:
+        raise ValueError("--max-runs must be positive")
 
     root = ROOT
     base = load_simple_yaml(root / args.config)
@@ -247,10 +299,24 @@ def main() -> int:
     seeds = args.seed if args.seed else base["simulation"]["seeds"]
     channels = args.channel_model or base["sweep"]["channel_model"]
     scenarios = base["sweep"]["scenario"]
+    policies = base["sweep"].get("policy") or [None]
     mcs_values = base["sweep"]["mcs"]
     payload_bits_values = base["sweep"]["payload_bits"]
     jammer_modes = base["sweep"]["jammer_mode"]
     jammer_powers = base["sweep"]["jammer_power_dbm"]
+    ofdma_cfg = base.get("ofdma") or {}
+    per_ru_enabled = bool(ofdma_cfg.get("per_ru_channel_enabled", False) or base["sweep"].get("jammer_ru_mode") or base["sweep"].get("policy"))
+    num_users_values = base["sweep"].get("num_users") or [fairness_users]
+    num_rus_values = base["sweep"].get("num_rus") or [int(ofdma_cfg.get("num_rus", 1))]
+    ru_width_tones_values = base["sweep"].get("ru_width_tones") or [int(ofdma_cfg.get("ru_width_tones", 26))]
+    ru_correlation_values = base["sweep"].get("ru_correlation_rho") or [float(ofdma_cfg.get("ru_correlation_rho", 0.0))]
+    jammer_ru_modes = base["sweep"].get("jammer_ru_mode") or [None]
+    jammed_ru_counts = base["sweep"].get("jammed_ru_count") or [int(ofdma_cfg.get("jammed_ru_count", 1))]
+    jammer_burst_values = base["sweep"].get("jammer_burst_ms") or [float(ofdma_cfg.get("jammer_burst_ms", 4.0))]
+    jammer_interval_values = base["sweep"].get("jammer_interval_ms") or [float(ofdma_cfg.get("jammer_interval_ms", 20.0))]
+    jammer_phase_values = base["sweep"].get("jammer_phase_ms") or [float(ofdma_cfg.get("jammer_phase_ms", 0.0))]
+    cooldown_symbols_values = base["sweep"].get("cooldown_symbols") or [None]
+    deadline_values = base["sweep"].get("deadline_ms") or [base["simulation"]["deadline_ms"]]
 
     # S9 estimator-impairment dimensions ([Fan26] §4.5 / Tab. 10 and §6.8 /
     # Tab. 11). When the YAML omits these keys the campaign reduces to a
@@ -279,65 +345,159 @@ def main() -> int:
         seeds = seeds[:1]
         channels = channels[:2]
         scenarios = scenarios[:2]
+        policies = policies[:1]
         mcs_values = [mcs_values[0], mcs_values[-1]]
         payload_bits_values = payload_bits_values[:1]
         jammer_modes = ["none", "constant"]
         jammer_powers = [0, 10]
+        num_users_values = num_users_values[:1]
+        num_rus_values = num_rus_values[:1]
+        ru_width_tones_values = ru_width_tones_values[:1]
+        ru_correlation_values = ru_correlation_values[:1]
+        jammer_ru_modes = jammer_ru_modes[:1]
+        jammed_ru_counts = jammed_ru_counts[:1]
+        jammer_burst_values = jammer_burst_values[:1]
+        jammer_interval_values = jammer_interval_values[:1]
+        jammer_phase_values = jammer_phase_values[:1]
+        cooldown_symbols_values = cooldown_symbols_values[:1]
+        deadline_values = deadline_values[:1]
 
     all_rows: list[dict[str, str]] = []
     all_json: list[dict] = []
     planned_runs = []
+    eligible_ordinal = 0
+    selected_count = 0
+    def selected_by_shard(ordinal: int) -> bool:
+        if args.shard_count is None:
+            return True
+        return (ordinal - 1) % args.shard_count == args.shard_index
+
     for channel in channels:
         for combo in itertools.product(
             seeds,
             scenarios,
+            policies,
             mcs_values,
             payload_bits_values,
             distance_values(channel, base, root, args.smoke),
             jammer_modes,
             jammer_powers,
+            jammer_ru_modes,
+            jammed_ru_counts,
+            jammer_burst_values,
+            jammer_interval_values,
+            jammer_phase_values,
+            cooldown_symbols_values,
+            deadline_values,
+            num_users_values,
+            num_rus_values,
+            ru_width_tones_values,
+            ru_correlation_values,
             target_snrs,
             s9_estimator_profiles,
             s9_ablation_variants_list,
         ):
-            *_, jammer_mode, jammer_power, _target_snr, _s9_prof, _s9_abl = combo
-            if jammer_mode == "none" and float(jammer_power) != 0.0:
+            (
+                _seed,
+                _scenario,
+                _policy,
+                _mcs,
+                _payload_bits,
+                _distance,
+                jammer_mode,
+                jammer_power,
+                jammer_ru_mode,
+                _jammed_count,
+                _jammer_burst,
+                _jammer_interval,
+                _jammer_phase,
+                _cooldown_symbols,
+                _deadline_ms,
+                _num_users,
+                _num_rus,
+                _ru_width_tones,
+                _ru_correlation,
+                _target_snr,
+                _s9_prof,
+                _s9_abl,
+            ) = combo
+            active_jammer = (jammer_ru_mode or jammer_mode) != "none"
+            if not active_jammer and float(jammer_power) != 0.0:
                 continue
-            if jammer_mode != "none" and float(jammer_power) == 0.0:
+            if active_jammer and float(jammer_power) == 0.0:
                 continue
+            eligible_ordinal += 1
+            if not selected_by_shard(eligible_ordinal):
+                continue
+            if args.max_runs is not None and selected_count >= args.max_runs:
+                continue
+            selected_count += 1
             planned_runs.append((channel, combo))
     total = len(planned_runs)
 
     run_index = 0
+    eligible_ordinal = 0
+    selected_count = 0
     for channel in channels:
         chan_args = channel_args(channel, root)
         for (
             seed,
             scenario,
+            policy,
             mcs,
             payload_bits,
             distance,
             jammer_mode,
             jammer_power,
+            jammer_ru_mode,
+            jammed_ru_count,
+            jammer_burst_ms,
+            jammer_interval_ms,
+            jammer_phase_ms,
+            cooldown_symbols,
+            deadline_ms,
+            num_users,
+            num_rus,
+            ru_width_tones,
+            ru_correlation_rho,
             target_snr,
             s9_profile,
             s9_ablation,
         ) in itertools.product(
             seeds,
             scenarios,
+            policies,
             mcs_values,
             payload_bits_values,
             distance_values(channel, base, root, args.smoke),
             jammer_modes,
             jammer_powers,
+            jammer_ru_modes,
+            jammed_ru_counts,
+            jammer_burst_values,
+            jammer_interval_values,
+            jammer_phase_values,
+            cooldown_symbols_values,
+            deadline_values,
+            num_users_values,
+            num_rus_values,
+            ru_width_tones_values,
+            ru_correlation_values,
             target_snrs,
             s9_estimator_profiles,
             s9_ablation_variants_list,
         ):
-            if jammer_mode == "none" and float(jammer_power) != 0.0:
+            active_jammer = (jammer_ru_mode or jammer_mode) != "none"
+            if not active_jammer and float(jammer_power) != 0.0:
                 continue
-            if jammer_mode != "none" and float(jammer_power) == 0.0:
+            if active_jammer and float(jammer_power) == 0.0:
                 continue
+            eligible_ordinal += 1
+            if not selected_by_shard(eligible_ordinal):
+                continue
+            if args.max_runs is not None and selected_count >= args.max_runs:
+                continue
+            selected_count += 1
             run_index += 1
             interval_ms = 10.0
             packets = 50 if args.smoke else int(args.packets_per_run or base["simulation"]["packets_per_run"])
@@ -354,9 +514,21 @@ def main() -> int:
             if s9_ablation is not None:
                 s9_label_parts.append(f"abl{s9_ablation}")
             s9_label = ("_" + "_".join(s9_label_parts)) if s9_label_parts else ""
+            ofdma_label_parts: list[str] = []
+            if policy is not None:
+                ofdma_label_parts.append(f"pol{policy}")
+            if jammer_ru_mode is not None:
+                ofdma_label_parts.append(f"jru{jammer_ru_mode}")
+            if per_ru_enabled:
+                ofdma_label_parts.append(f"rus{num_rus}")
+                ofdma_label_parts.append(f"u{num_users}")
+                if cooldown_symbols is not None:
+                    ofdma_label_parts.append(f"cd{cooldown_symbols}")
+                ofdma_label_parts.append(f"ph{jammer_phase_ms:g}")
+            ofdma_label = ("_" + "_".join(ofdma_label_parts)) if ofdma_label_parts else ""
             run_name = (
                 f"run_{run_index:06d}_{channel}_{scenario}_mcs{mcs}_{payload_bits}b_"
-                f"{distance}m_{jammer_mode}_{jammer_power}dbm_{snr_label}{s9_label}_seed{seed}"
+                f"{distance}m_{jammer_mode}_{jammer_power}dbm_{snr_label}{ofdma_label}{s9_label}_seed{seed}"
             )
             csv_path = runs_dir / f"{run_name}.csv"
             json_path = runs_dir / f"{run_name}.json"
@@ -379,15 +551,31 @@ def main() -> int:
                 f"--jammerPowerDbm={jammer_power}",
                 f"--seed={seed}",
                 f"--packets={packets}",
-                f"--users={fairness_users}",
+                f"--users={num_users}",
                 f"--retryLimit={scenario_retry_limit(str(scenario))}",
                 f"--simTimeS={sim_time_s}",
                 f"--warmupS={base['simulation']['warmup_s']}",
                 f"--intervalMs={interval_ms}",
-                f"--deadlineMs={base['simulation']['deadline_ms']}",
+                f"--deadlineMs={deadline_ms}",
                 f"--output={csv_path}",
                 f"--jsonOutput={json_path}",
             ]
+            if per_ru_enabled:
+                cmd.extend([
+                    "--per-ru-channel-enabled=true",
+                    f"--num-rus={num_rus}",
+                    f"--ru-width-tones={ru_width_tones}",
+                    f"--ru-correlation-rho={ru_correlation_rho}",
+                    f"--jammer-ru-mode={jammer_ru_mode or 'none'}",
+                    f"--jammed-ru-count={jammed_ru_count}",
+                    f"--jammer-burst-ms={jammer_burst_ms}",
+                    f"--jammer-interval-ms={jammer_interval_ms}",
+                    f"--jammer-phase-ms={jammer_phase_ms}",
+                ])
+                if policy is not None:
+                    cmd.append(f"--policy={policy}")
+                if cooldown_symbols is not None:
+                    cmd.append(f"--s9-cooldown-symbols={cooldown_symbols}")
             for key, value in chan_args.items():
                 if tx_power_dbm is not None and key == "--txPowerDbm":
                     continue
@@ -425,6 +613,7 @@ def main() -> int:
     results_csv = output_dir / "results.csv"
     results_json = output_dir / "results.json"
     recompute_jammer_deltas(all_rows)
+    recompute_policy_gains(all_rows)
     if all_rows:
         assert_single_channel_fidelity(all_rows, results_csv)
         fieldnames = ["run_name"] + [name for name in all_rows[0].keys() if name != "run_name"]

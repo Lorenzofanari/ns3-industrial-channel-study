@@ -43,6 +43,24 @@ struct Cm8RayleighConfig
     double shadowingStdDb{2.0};
     bool rayleighFading{true};
     double coherenceTimeMs{5.0};
+    // Temporal-correlation model for the small-scale fading process.
+    //   "block" : historical piecewise-constant block fading. The fading
+    //             sample is held for `coherenceTimeMs` then redrawn independent.
+    //             Default, so all pre-existing archives stay bit-reproducible.
+    //   "ar1"   : first-order auto-regressive / Ornstein-Uhlenbeck process
+    //             sampled at the actual access instants:
+    //               x(t2) = rho*x(t1) + sqrt(1-rho^2)*eps,  rho = exp(-dt/Tc).
+    //             Shadowing (Gaussian in dB) and the Rayleigh complex envelope
+    //             are each evolved as OU processes so that the *temporal*
+    //             autocorrelation is monotone in `coherenceTimeMs` (larger Tc
+    //             -> slower decorrelation). This is a documented engineering
+    //             correlation model, NOT a calibrated 802.11ax PHY.
+    std::string correlationModel{"block"};
+    // Uniform sampling period (us) used by the standalone channel-trace probe
+    // (EmitChannelTrace) when estimating the autocorrelation R_gamma(tau).
+    double channelUpdatePeriodUs{50.0};
+    // Dedicated RNG seed for the fading process. 0 -> derive from the run seed.
+    uint32_t fadingSeed{0};
     double industrialExcessLossDb{3.0};
     double receiverSensitivityDbm{-95.0};
     double packetDetectionThresholdDbm{-90.0};

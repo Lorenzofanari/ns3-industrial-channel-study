@@ -27,9 +27,64 @@ TestPerWaterfallDefaults()
     const PerWaterfallConfig cfg;
     Require(PerThetaForMcs(0, cfg) == 3.0, "MCS0 must use BPSK-1/2 theta 3.0 dB");
     Require(PerThetaForMcs(1, cfg) == 6.0, "MCS1 must use QPSK-1/2 theta 6.0 dB");
-    Require(PerThetaForMcs(3, cfg) == 15.5, "MCS3 must use 16QAM-3/4 theta 15.5 dB");
+    Require(PerThetaForMcs(3, cfg) == 15.5, "MCS3 must use 16QAM-1/2 theta 15.5 dB");
     Require(cfg.slope == 1.15, "PER slope default must be 1.15");
     Require(cfg.floor == 1e-8, "PER floor default must be 1e-8");
+}
+
+void
+TestMcsMetadata()
+{
+    Require(McsLabel(0) == "BPSK_1_2", "MCS0 label must be BPSK_1_2");
+    Require(McsLabel(1) == "QPSK_1_2", "MCS1 label must be QPSK_1_2");
+    Require(McsLabel(3) == "16QAM_1_2", "MCS3 label must be 16QAM_1_2");
+    Require(McsModulation(3) == "16-QAM", "MCS3 modulation must be 16-QAM");
+    Require(McsCodingRate(0) == "1/2", "MCS0 coding rate must be 1/2");
+}
+
+void
+TestCooldownConversion()
+{
+    Require(std::abs(CooldownSymbolsToMs(0) - 0.0) < 1e-12,
+            "0 cooldown symbols must convert to 0 ms");
+    Require(std::abs(CooldownSymbolsToMs(76) - 1.216) < 1e-12,
+            "76 OFDM symbols at 16 us must convert to 1.216 ms");
+    Require(std::abs(CooldownSymbolsToMs(304) - 4.864) < 1e-12,
+            "304 OFDM symbols at 16 us must convert to 4.864 ms");
+}
+
+void
+TestPerRuJammerSelection()
+{
+    const auto broadband =
+        JammedRusForBurst("broadband_reactive", {}, 1, 4, 0, 20260507, 0, 0.0, 1.0);
+    Require(broadband.size() == 4, "Broadband jammer must affect every RU");
+
+    const auto narrow =
+        JammedRusForBurst("narrowband_reactive", {2}, 1, 4, 0, 20260507, 0, 0.0, 1.0);
+    Require(narrow.size() == 1 && narrow[0] == 2,
+            "Narrowband jammer must affect only the configured RU");
+
+    const auto partialA =
+        JammedRusForBurst("partial_band_reactive_random", {}, 2, 8, 3, 20260507, 0, 0.0, 1.0);
+    const auto partialB =
+        JammedRusForBurst("partial_band_reactive_random", {}, 2, 8, 3, 20260507, 0, 0.0, 1.0);
+    Require(partialA.size() == 2, "Partial-band jammer must select exactly K RUs");
+    Require(partialA == partialB, "Partial-band RU selection must be seed/burst reproducible");
+
+    const auto retryAware =
+        JammedRusForBurst("retry_aware_reactive", {}, 1, 4, 0, 20260507, 3, 1.0, 0.0);
+    Require(retryAware.size() == 1 && retryAware[0] == 3,
+            "Retry-aware jammer must follow the retry RU when the Bernoulli draw fires");
+}
+
+void
+TestBestRuSelectors()
+{
+    Require(SelectMinIndex({0.8, 0.2, 0.4}) == 1,
+            "Estimated-best-RU selection must choose minimum estimated PER");
+    Require(SelectMinIndex({0.6, 0.5, 0.1, 0.2}) == 2,
+            "Oracle-best-RU selection must choose minimum true PER");
 }
 
 void
@@ -169,6 +224,10 @@ int
 main()
 {
     TestPerWaterfallDefaults();
+    TestMcsMetadata();
+    TestCooldownConversion();
+    TestPerRuJammerSelection();
+    TestBestRuSelectors();
     TestEveNoiseDistribution();
     TestChannelFidelityLabels();
     TestPerWaterfallSigmoidMonotonic();
