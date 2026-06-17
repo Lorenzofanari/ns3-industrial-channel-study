@@ -119,8 +119,13 @@ def main():
     if agg_path.exists():
         agg = read_aggregate(agg_path)
         cdp = agg[agg["policy"].isin(["cooldown_only", "cooldown_plus_retarget"])]
+        # Group by every non-cooldown axis so the p95-vs-cooldown comparison stays
+        # within a single cell. jammer_phase_ms must be included: the full matrix
+        # sweeps phases {0,5,10}, and mixing phases would compare the lowest- and
+        # highest-cooldown rows across different phases (a grouping artefact, not a
+        # physical non-monotonicity).
         keys = ["channel_correlation_model", "coherence_time_ms", "jammer_ru_mode",
-                "policy", "mcs", "payload_bits", "distance_m", "seed"]
+                "jammer_phase_ms", "policy", "mcs", "payload_bits", "distance_m", "seed"]
         n_ok = n_tot = 0
         for _, sub in cdp.groupby(keys):
             sub = sub.sort_values("cooldown_symbols")

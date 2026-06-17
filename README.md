@@ -96,7 +96,14 @@ calibration source in [`BIBLIOGRAPHY.md`](BIBLIOGRAPHY.md) /
   CM8 replica. To reproduce results with the literature-faithful CM8 NLOS
   parameters use `configs/channels/cm8_strict_nlos.yaml` (`n=2.15, sigma_S=6
   dB, PL_0=56.7 dB, validity 1-10 m`) or pass the corresponding `--*`
-  overrides on the CLI.
+  overrides on the CLI. Small-scale fading temporal correlation is controlled by
+  `--channel-correlation-model`:
+  - `block` (default) -- piecewise-constant hold for `coherenceTimeMs`, then
+    independent redraw; preserves bit-reproducible legacy archives.
+  - `ar1` -- Ornstein-Uhlenbeck process with `rho = exp(-dt/T_c)` on shadowing
+    and the Rayleigh envelope; an engineering correlation model for coherence-
+    time sweeps, **not** a calibrated 802.11ax PHY or Doppler-derived mobility
+    model.
 - `inf_nlos_dl` -- **3GPP TR 38.901 §7.4.1 Indoor Factory NLOS, Dense Clutter,
   Low BS** [3GPP38901]. The same C++ engine as `cm8_rayleigh` is reused with
   the InF-DL parameter set:
@@ -182,6 +189,26 @@ for measured scientific evidence.
 
 CSV exports the short policy in `policy` (and preserves `scenario` for legacy
 grouping) plus the descriptive alias in `policy_label`.
+
+### Per-RU OFDMA harness (`--per-ru-channel-enabled=true`)
+
+The per-RU core harness adds scheduler variants that separate temporal
+decorrelation from frequency-domain RU retargeting. Pass `--policy=` on the CLI
+(or list it under `sweep.policy` in a YAML campaign):
+
+| policy | behaviour |
+|---|---|
+| `baseline_pf` | fixed initial RU, no cooldown, no retargeting |
+| `rtx_assist` | S8-style fixed SNIR gain on retries |
+| `cooldown_only` | cooldown-on-failure, same RU |
+| `ru_retarget_only` | immediate retry on AP-estimated best RU |
+| `cooldown_plus_retarget` | cooldown then retarget (S9-like) |
+| `random_ru_hop` | random RU on retry (sanity baseline) |
+| `oracle_best_ru` | oracle best-RU retargeting (upper bound) |
+
+Reactive jamming honours `--jammer-phase-ms` on this path. Jammer RU modes
+include `broadband_reactive`, `narrowband_reactive`, and
+`partial_band_reactive_random` (see `--jammer-ru-mode`).
 
 ## Build
 
@@ -411,6 +438,54 @@ The paper also uses paper-aligned policy names (`Baseline-PF`, `RTX-Assist`,
 side by side with the legacy `policy_label` (`Baseline-PF`, `PLS-RTX`,
 `PLS-Realloc`) that keeps the historical archive valid.
 
+## Coherence-Time Control Experiment
+
+Control study on branch `coherence-time-experiment`: does the cooldown-on-failure
+gain correlate with channel coherence time (`chi_c = T_cd/T_c`) or with jammer-
+phase decorrelation (`chi_cd = T_cd/T_on`)? The campaign uses the per-RU harness,
+an opt-in AR(1) fading model, uniform-time channel traces for autocorrelation-
+based `T_c` estimation, and optional per-(packet, attempt) logs.
+
+**Data-driven verdict (reduced matrix, reproducible):** jammer-phase
+decorrelation dominates; channel-coherence-time contribution **not supported**
+(no-jammer cooldown gain ≈ 0). RU retargeting is a material confound in the
+combined policy. Full write-up:
+`results/coherence_time_experiment/FINAL_COHERENCE_TIME_REPORT.md` (regenerated
+by the scripts below; not tracked in git).
+
+One-command pipelines:
+
+```bash
+# smoke / debug (seconds)
+bash scripts/run_coherence_debug.sh
+
+# documented evidence matrix (~24 s on 8 cores)
+MATRIX=reduced bash scripts/run_coherence_full.sh
+
+# full factorial (~9 min at 8 parallel jobs)
+MATRIX=full JOBS=8 bash scripts/run_coherence_full.sh
+```
+
+Individual stages and config: `configs/coherence_time_sweep.yaml`,
+`scripts/run_coherence_experiment.py`. Outputs land under
+`results/coherence_time_experiment/<matrix>/` (`aggregate.csv`, channel traces,
+attempt logs, `analysis/`, `figures/`).
+
+Instrumentation CLI (opt-in; legacy runs unchanged when omitted):
+
+- `--channel-correlation-model=block|ar1` (default `block`)
+- `--coherenceTimeMs=<ms>`
+- `--fading-seed=<uint>` (0 derives from `--seed`)
+- `--channel-update-period-us=<us>` (uniform trace sampling period)
+- `--attempt-log=<path>` (per-RU harness only)
+- `--channel-trace-log=<path>` (channel-only uniform-time probe)
+- `--run-id=<label>`
+
+Aggregate CSV adds `coherence_time_ms` and `channel_correlation_model`.
+Per-RU telemetry also exports `temporal_gain`, `ru_diversity_gain`, and
+`combined_gain` (computed post-run by `run_sweep.py` when baseline, cooldown,
+and combined policies share a cell).
+
 ## Journal-Grade Anti-Jamming Telemetry
 
 Every CSV row produced by `ns3_core_harness` now exports the following
@@ -501,6 +576,23 @@ S8 and S9 scaffolding:
 
 - `--s8-rtx-snir-gain=1.35`
 - `--s9-cooldown-symbols=76`
+- `--s9-cooldown-ms=<ms>` (optional override; negative = derive from symbols)
+
+Coherence-time / instrumentation (opt-in; default preserves legacy archives):
+
+- `--coherenceTimeMs=5.0`
+- `--channel-correlation-model=block|ar1`
+- `--fading-seed=0`
+- `--channel-update-period-us=50`
+- `--attempt-log=<path>`
+- `--channel-trace-log=<path>`
+
+Per-RU OFDMA harness:
+
+- `--per-ru-channel-enabled=true`
+- `--num-rus`, `--num-users`, `--ru-correlation-rho`, `--ru-width-tones`
+- `--jammer-ru-mode`, `--jammer-burst-ms`, `--jammer-interval-ms`,
+  `--jammer-phase-ms`, `--jammed-ru-list`, `--jammed-ru-count`
 
 Eve estimation error scaffolding defaults to ideal/off:
 
@@ -544,9 +636,12 @@ added.
 
 - `ns3_core_harness`: no YansWifiPhy, no trigger frames, no BlockAck, no A-MPDU.
 - Channel models: main campaign uses proxy parameters, not geometry traces.
+- Temporal fading: default `block` correlation; opt-in `ar1` is an engineering
+  OU process, not a Doppler-calibrated 802.11ax channel model.
 - Eve estimation: ideal risk map assumed in published runs; no noise/bias/delay
   sweep was performed.
-- Latency: aggregate percentiles only, no per-packet CDF archive.
+- Latency: aggregate percentiles in the main CSV; per-(packet, attempt) timing
+  available only when `--attempt-log` is enabled.
 
 ## Future Validation Path
 
