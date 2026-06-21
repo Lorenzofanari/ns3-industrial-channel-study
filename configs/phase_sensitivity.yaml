@@ -1,0 +1,31 @@
+simulation:
+  simulation_path: ns3_core_harness
+  simulation_time_s: 1.0
+  warmup_s: 0.5
+  seeds: [20260507, 20260508, 20260509]
+  output_dir: results/phase_sensitivity
+  packets_per_run: 10000
+  deadline_ms: 10.0
+
+sweep:
+  channel_model: [cm8_rayleigh]
+  scenario: [S4]
+  policy: [baseline_pf, cooldown_only, cooldown_plus_retarget]
+  mcs: [0, 3]
+  payload_bits: [128, 512]
+  cm8_distance_m: [3]
+  jammer_mode: [none]
+  jammer_ru_mode: [narrowband_reactive, partial_band_reactive_random]
+  jammer_power_dbm: [10]
+  num_users: [6, 20]
+  num_rus: [4, 8]
+  ru_width_tones: [26]
+  ru_correlation_rho: [0.2]
+  jammed_ru_count: [1, 2]
+  jammer_burst_ms: [4]
+  jammer_interval_ms: [20]
+  jammer_phase_ms: [0, 1, 2, 3, 4, 5, 10, 15]
+  cooldown_symbols: [76]
+
+ofdma:
+  per_ru_channel_enabled: true

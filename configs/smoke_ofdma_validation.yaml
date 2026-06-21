@@ -1,0 +1,39 @@
+# Quick OFDMA/per-RU correctness smoke campaign.
+simulation:
+  simulation_path: ns3_core_harness
+  simulation_time_s: 1.0
+  warmup_s: 0.5
+  seeds: [20260507]
+  output_dir: results/smoke_ofdma_validation
+  packets_per_run: 1000
+  deadline_ms: 10.0
+
+sweep:
+  channel_model: [cm8_rayleigh]
+  scenario: [S4]
+  policy: [baseline_pf, cooldown_only, ru_retarget_only, cooldown_plus_retarget, oracle_best_ru]
+  mcs: [0]
+  payload_bits: [128]
+  cm8_distance_m: [3]
+  jammer_mode: [none]
+  jammer_ru_mode: [narrowband_reactive]
+  jammer_power_dbm: [10]
+  num_users: [6]
+  num_rus: [4]
+  ru_width_tones: [26]
+  ru_correlation_rho: [0.2]
+  jammed_ru_count: [1]
+  jammer_burst_ms: [4]
+  jammer_interval_ms: [20]
+  jammer_phase_ms: [0]
+  cooldown_symbols: [76]
+
+ofdma:
+  per_ru_channel_enabled: true
+  num_rus: 4
+  ru_width_tones: 26
+  ru_correlation_rho: 0.2
+  jammed_ru_count: 1
+  jammer_burst_ms: 4
+  jammer_interval_ms: 20
+  jammer_phase_ms: 0
