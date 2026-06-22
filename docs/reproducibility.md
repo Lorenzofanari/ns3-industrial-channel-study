@@ -27,3 +27,32 @@ python3 scripts/plot_results.py --input results/sweep/results.csv --output-dir r
 python3 scripts/make_report.py --input results/sweep/results.csv --trend-report results/sweep/trend_report.md --output results/sweep/reproducibility_report.md
 ```
 
+## Cooldown-length sweep and deadline-tail analysis
+
+These scripts support the scheduler-paper claims about cooldown-on-failure retry
+timing. All outputs land under `results/cooldown_sweep_analysis/` (git-ignored;
+regenerated on demand) and each writes a `PROVENANCE*.txt` (git commit, seeds,
+exact command). See `RESULTS_FOR_PAPER.md` Section 15 for the interpretation and
+claim boundaries.
+
+```bash
+# 1. Cooldown-length sweep (aggregation of the existing coherence campaign):
+#    reliability vs latency across T_cd in {0,19,38,76,152,304} OFDM symbols.
+python3 scripts/aggregate_cooldown_sweep.py
+
+# 2. Broadband multi-deadline deadline-tail (small NEW attempt-log campaign,
+#    ~11 s / 84 runs): deadline-miss ratio for D in {1,5,10} ms derived offline
+#    from per-packet latency; AR(1) primary + block parity; 3 seeds.
+python3 scripts/cooldown_multideadline_broadband.py
+
+# 3. PDR / conditional-PDR(jammer-ON) with seed uncertainty (aggregation only):
+#    mean +/- seed std over the 3 paper seeds; PDR also bounded by Clopper-Pearson.
+python3 scripts/plot_pdr_seed_uncertainty.py
+```
+
+Claim boundaries enforced by these scripts: engineering AR(1)/block channel model
+(NOT a calibrated 802.11ax PHY); scheduler-harness Monte-Carlo matrix only; zero
+*observed* misses reported as rule-of-three 95% upper bounds, never as zero
+probability; the scenarios stay distinct (S4 baseline-PF, S8 retarget-only,
+S9 full cooldown-on-failure).
+
